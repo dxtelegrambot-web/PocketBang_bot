@@ -1,0 +1,11 @@
+# Python 缓存文件
+__pycache__/
+
+# 分发/打包
+.Python
+build/
+# 环境变量
+.env
+# 日志文件
+*.log
+logs/

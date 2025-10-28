@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  # TON红包Bot应用
+  luckypack_bot:
+    build: .
+    container_name: luckypack_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+
+networks:
+  luckypack_network:
+    driver: bridge

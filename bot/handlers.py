@@ -5,7 +5,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 # --- 配置参数 ---
-ADMIN_IDS = [7653037721]  # 填入你的Telegram ID，多个用逗号隔开，例如 ["123", "456"]
+ADMIN_IDS = 7653037721  # 填入你的Telegram ID，多个用逗号隔开，例如 ["123", "456"]
 MIN_AMOUNT = 20
 MAX_AMOUNT = 1000
 COMMISSION = 0.05 # 5% 抽成
@@ -20,7 +20,7 @@ class BotHandlers:
         chat_id = update.effective_chat.id
 
         # 1. 管理员人工上下分指令 (格式: 回复某人发送 +100 或 -100)
-        if (text.startswith('+') or text.startswith('-')) and str(user.id) in ADMIN_IDS:
+        if (text.startswith('+') or text.startswith('-')) and str(user.id) == str(ADMIN_IDS):
             if update.message.reply_to_message:
                 target_user = update.message.reply_to_message.from_user
                 try:

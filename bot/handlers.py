@@ -10,7 +10,7 @@ from telegram.ext import ContextTypes
 ADMIN_IDS = "7653037721" # 你的ID
 MIN_AMOUNT = 20
 MAX_AMOUNT = 1000
-COMMISSION = 0.05 # 5% 抽成 (中雷赔付给发包者时扣除)
+COMMISSION = 0.05 # 5% 抽成
 
 # 全局变量：存储红包状态
 active_packets = {}
@@ -31,17 +31,18 @@ class BotHandlers:
                 try:
                     change = float(text)
                     self.db.add_balance(target_user.id, change) 
-                    await update.message.reply_text(f"✅ 上分成功！\n用户: {target_user.first_name}\n变动: {change}\n当前余额: {round(self.db.get_balance(target_user.id), 2)}")
+                    new_bal = self.db.get_balance(target_user.id)
+                    await update.message.reply_text(f"✅ 操作成功！\n用户: {target_user.first_name}\n变动: {change}\n当前余额: {new_bal:.2f}")
                 except: pass
             return
 
         # 2. 查询
         if text == "查询":
             balance = self.db.get_balance(user.id)
-            await update.message.reply_text(f"👤 用户: {user.first_name}\n💰 当前余额: {round(balance, 2)}")
+            await update.message.reply_text(f"👤 用户: {user.first_name}\n💰 余额: {balance:.2f}")
             return
 
-        # 3. 发红包逻辑
+        # 3. 发红包逻辑 (100/5/7)
         pattern = r'^(\d+)(?:/(\d+))?/(\d)$'
         match = re.match(pattern, text)
         if match:
@@ -50,29 +51,24 @@ class BotHandlers:
             mine = int(match.group(3))
 
             if amount < MIN_AMOUNT or amount > MAX_AMOUNT:
-                return await update.message.reply_text(f"❌ 金额限制 {MIN_AMOUNT}-{MAX_AMOUNT}")
-            if count < 1 or count > 10:
-                return await update.message.reply_text("❌ 包数限制 1-10")
+                return await update.message.reply_text(f"❌ 金额需在 {MIN_AMOUNT}-{MAX_AMOUNT} 之间")
             
-            user_balance = self.db.get_balance(user.id)
-            if user_balance < amount:
-                return await update.message.reply_text(f"❌ 余额不足以发包\n当前余额: {round(user_balance, 2)}")
+            # 严格检查发包者余额
+            if self.db.get_balance(user.id) < amount:
+                return await update.message.reply_text(f"❌ 余额不足以发包\n当前余额: {self.db.get_balance(user.id):.2f}")
 
-            # 发包扣费
+            # 扣除分数
             self.db.add_balance(user.id, -amount)
-            packet_id = f"pk_{int(time.time())}_{user.id}"
-            
-            # 生成固定金额列表
-            amounts = self.generate_amounts(amount, count)
+            packet_id = f"pk_{int(time.time()*1000)}" # 使用毫秒级ID防止冲突
             
             active_packets[packet_id] = {
                 "total": amount,
-                "amounts": amounts,
+                "amounts": self.generate_amounts(amount, count),
                 "total_count": count,
                 "mine": mine,
                 "owner_id": user.id,
                 "owner_name": user.first_name,
-                "grabbers": [], # 仅记录符合条件的抢包者
+                "grabbers": [],
                 "status": "active",
                 "chat_id": update.effective_chat.id
             }
@@ -81,19 +77,16 @@ class BotHandlers:
             await update.message.reply_text(
                 f"🧧 【红包扫雷】\n━━━━━━━━━━━━━━\n"
                 f"发包老总：{user.first_name}\n红包金额：{amount}\n"
-                f"红包包数：{count}\n雷号：{mine}\n━━━━━━━━━━━━━━\n"
-                f"抢包门槛：需持分 {amount} 以上\n"
-                f"进度：(0/{count})",
+                f"红包包数：{count}\n雷号：{mine}\n"
+                f"抢包门槛：需持分 {amount}\n━━━━━━━━━━━━━━\n"
+                f"等待抢包... (0/{count})",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
-            # 10分钟过期自动开奖任务
-            asyncio.create_task(self.expire_packet(packet_id, context))
 
     def generate_amounts(self, total, count):
         amounts = []
         remaining = total
         for i in range(count - 1):
-            # 保证金额随机且末尾数字分布均匀
             amt = round(random.uniform(0.01, (remaining / (count - i)) * 2), 2)
             amounts.append(amt)
             remaining -= amt
@@ -107,26 +100,33 @@ class BotHandlers:
         packet_id = query.data.replace("grab_", "")
 
         if packet_id not in active_packets:
-            return await query.answer("❌ 该红包已过期结算", show_alert=True)
+            return await query.answer("❌ 红包已过期或不存在", show_alert=True)
 
         data = active_packets[packet_id]
-        if data["status"] != "active": return
-
-        # --- 核心修复：余额门槛检查 ---
-        user_balance = self.db.get_balance(user.id)
-        if user_balance < data["total"]:
-            return await query.answer(f"❌ 抢包失败！\n你的余额 ({round(user_balance, 2)}) 低于中雷赔付额 ({data['total']})，请联系管理员上分。", show_alert=True)
-
-        if any(g['id'] == user.id for g in data["grabbers"]):
-            return await query.answer("❌ 你已经抢过此包，请等待开奖", show_alert=True)
         
-        # 记录抢包者
+        # --- 这里的逻辑是解决“0元抢包”的关键 ---
+        # 1. 实时读取数据库最新余额，不信任缓存
+        current_balance = self.db.get_balance(user.id)
+        
+        # 2. 强制校验：余额必须大于等于红包总额
+        if current_balance < data["total"]:
+            return await query.answer(f"⚠️ 余额不足！\n当前余额: {current_balance:.2f}\n抢此包需满足: {data['total']:.2f}\n请联系管理员上分。", show_alert=True)
+
+        # 3. 防止红包已领完
+        if len(data["grabbers"]) >= data["total_count"]:
+            return await query.answer("❌ 手慢了，红包已抢完", show_alert=True)
+
+        # 4. 防止重复抢包
+        if any(g['id'] == user.id for g in data["grabbers"]):
+            return await query.answer("❌ 你已经抢过此包，请等待结算", show_alert=True)
+
+        # 5. 记录抢包
         data["grabbers"].append({"id": user.id, "name": user.first_name})
         grabbed_count = len(data["grabbers"])
         
-        await query.answer("✅ 抢包成功，等待结算...")
+        await query.answer("✅ 抢包成功，请等待开奖...")
 
-        # 实时更新抢包人数
+        # 更新红包消息
         new_text = (
             f"🧧 【红包扫雷】\n━━━━━━━━━━━━━━\n"
             f"发包老总：{data['owner_name']}\n红包金额：{data['total']}\n"
@@ -135,19 +135,12 @@ class BotHandlers:
         )
         for g in data["grabbers"]:
             h_name = f"{g['name']}*{g['name'][-1]}" if len(g['name'])>1 else g['name']+"*"
-            new_text += f"\n{h_name} 已抢入"
+            new_text += f"\n{h_name} 已入场"
 
         if grabbed_count >= data["total_count"]:
-            # 这里的 message_id 是按钮所在的消息 ID
             await self.finalize_packet(packet_id, query.message.message_id, context)
         else:
             await query.edit_message_text(text=new_text, reply_markup=query.message.reply_markup)
-
-    async def expire_packet(self, packet_id, context):
-        await asyncio.sleep(600) # 10分钟
-        if packet_id in active_packets and active_packets[packet_id]["status"] == "active":
-            # 这里需要寻找到消息 ID 才能更新
-            pass # 实际运行中 finalize 会处理，此处为防止意外
 
     async def finalize_packet(self, packet_id, msg_id, context):
         if packet_id not in active_packets: return
@@ -157,32 +150,24 @@ class BotHandlers:
         result_lines = [f"🧧 红包结算结果 (雷:{data['mine']})", "━━━━━━━━━━━━━━"]
         
         for i, grabber in enumerate(data["grabbers"]):
-            grab_amount = data["amounts"][i]
-            # 取金额的最后一位数字
-            last_digit = int(str(grab_amount)[-1])
+            amt = data["amounts"][i]
+            last_digit = int(str(amt)[-1])
             is_mine = (last_digit == data["mine"])
             
             h_name = f"{grabber['name']}*{grabber['name'][-1]}" if len(grabber['name'])>1 else grabber['name']+"*"
-            line = f"{h_name} -> {grab_amount:.2f}"
+            line = f"{h_name} -> {amt:.2f}"
             
             if is_mine:
                 line += " 💣"
-                # 中雷赔付逻辑：发包者收 95%，机器人抽 5%
-                pay_to_owner = round(data["total"] * (1 - COMMISSION), 2)
-                self.db.add_balance(data["owner_id"], pay_to_owner)
-                self.db.add_balance(grabber['id'], -data["total"]) # 中雷者扣全额
+                # 中雷赔付发包者95%，抽5%
+                to_owner = round(data["total"] * (1 - COMMISSION), 2)
+                self.db.add_balance(data["owner_id"], to_owner)
+                self.db.add_balance(grabber['id'], -data["total"])
             else:
-                # 未中雷：抢多少加多少，不抽成
-                self.db.add_balance(grabber['id'], grab_amount)
+                # 未中雷不抽成
+                self.db.add_balance(grabber['id'], amt)
             
             result_lines.append(line)
-
-        # 退还未领取的红包份额
-        grabbed_num = len(data["grabbers"])
-        if grabbed_num < data["total_count"]:
-            refund = sum(data["amounts"][grabbed_num:])
-            self.db.add_balance(data["owner_id"], round(refund, 2))
-            result_lines.append(f"━━━━━━━━━━━━━━\n未领完退还：{round(refund, 2)}")
 
         await context.bot.edit_message_text(
             chat_id=data["chat_id"],

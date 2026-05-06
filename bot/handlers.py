@@ -5,7 +5,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 # --- 配置参数 ---
-ADMIN_IDS = ["7653037721"]  # 填入你的Telegram ID，多个用逗号隔开，例如 ["123", "456"]
+ADMIN_IDS = [7653037721]  # 填入你的Telegram ID，多个用逗号隔开，例如 ["123", "456"]
 MIN_AMOUNT = 20
 MAX_AMOUNT = 1000
 COMMISSION = 0.05 # 5% 抽成

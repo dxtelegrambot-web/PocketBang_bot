@@ -28,8 +28,8 @@ from telegram import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScope
 
 
 from database.models import Database
-from bot.handlers import BotHandlers, SEND_AMOUNT, SEND_COUNT, SEND_MESSAGE, SEND_TYPE, WITHDRAW_AMOUNT, WITHDRAW_ADDRESS
-from ton.client import get_ton_client
+from bot.handlers import BotHandlers
+
 
 # 加载环境变量
 load_dotenv()

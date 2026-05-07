@@ -1,178 +1,128 @@
-import os
-import random
-import re
-import time
-import asyncio
+import random, re, time, asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-# --- 核心配置 ---
-OWNER_ID = 7653037721  # 你的数字ID
-MIN_AMOUNT = 20
-MAX_AMOUNT = 1000
+OWNER_ID = 7653037721 # 你的ID
 COMMISSION = 0.05 
-
-# 全局变量：存储红包状态和群组手动开关状态
 active_packets = {}
-group_switch = {} # {chat_id: True/False} 手动开启/关闭状态
+group_switch = {}
 
 class BotHandlers:
     def __init__(self, db):
         self.db = db
 
-    async def verify_owner_presence(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """核心安全锁：检查拥有者是否在群、是否为管理员、是否已发送开启"""
-        chat_id = update.effective_chat.id
-        
-        # 1. 检查手动开关
-        if not group_switch.get(chat_id, False):
-            return False, "⚠️ 机器人处于关闭状态，需拥有者发送“开启”激活。"
-
+    async def verify_owner(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        cid = update.effective_chat.id
+        if not group_switch.get(cid): return False, "⚠️ 机器人未开启。"
         try:
-            # 2. 实时检查拥有者在不在群里，以及其权限
-            owner_member = await context.bot.get_chat_member(chat_id, OWNER_ID)
-            # member, administrator, creator 均视为在群，但你要求必须是管理员
-            if owner_member.status not in ['administrator', 'creator']:
-                return False, "❌ 拥有者已不是群管理员，机器人自动停用。"
-        except Exception:
-            # 报错说明拥有者已退群
-            return False, "❌ 拥有者不在群聊中，机器人自动停 eyes。"
-
+            o = await context.bot.get_chat_member(cid, OWNER_ID)
+            if o.status not in ['administrator', 'creator']: return False, "❌ 拥有者非管理员。"
+        except: return False, "❌ 拥有者不在群内。"
         return True, ""
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        text = update.message.text
-        user = update.effective_user
-        chat_id = update.effective_chat.id
-        if not text: return
+        msg = update.message; user = update.effective_user; cid = msg.chat_id
+        if not msg.text: return
+        txt = msg.text
 
-        # --- 权限控制逻辑 ---
-        
-        # 1. 只有拥有者可以操作【开启/关闭】
-        if text == "开启" and user.id == OWNER_ID:
-            # 开启时顺便检查一下自己是不是管理员
-            try:
-                me = await context.bot.get_chat_member(chat_id, OWNER_ID)
-                if me.status in ['administrator', 'creator']:
-                    group_switch[chat_id] = True
-                    return await update.message.reply_text("✅ 身份验证成功！机器人已启动。")
-                else:
-                    return await update.message.reply_text("❌ 开启失败：请先将拥有者设为群管理员。")
-            except:
-                return
+        # 1. 权限开关
+        if txt == "开启" and user.id == OWNER_ID:
+            group_switch[cid] = True
+            return await msg.reply_text("✅ 长期租赁授权已激活，流水库已连接。")
+        if txt == "关闭" and user.id == OWNER_ID:
+            group_switch[cid] = False
+            return await msg.reply_text("💤 系统已休眠。")
 
-        if text == "关闭" and user.id == OWNER_ID:
-            group_switch[chat_id] = False
-            return await update.message.reply_text("💤 机器人已进入休眠状态。")
+        # 2. 授权检查
+        ready, alert = await self.verify_owner(update, context)
+        if not ready and txt in ["流水", "我的流水", "查询"]:
+            return await msg.reply_text(alert)
 
-        # 2. 所有功能（查询、发包、加分）执行前的【三重锁】检查
-        is_ready, alert_msg = await self.verify_owner_presence(update, context)
-        if not is_ready:
-            # 只有发包或查询时才弹窗提醒，避免群聊刷屏
-            if "/" in text or text == "查询":
-                await update.message.reply_text(alert_msg)
+        m = await context.bot.get_chat_member(cid, user.id)
+        is_adm = m.status in ['administrator', 'creator'] or user.id == OWNER_ID
+
+        # 3. 个人流水 (显示最近20条)
+        if txt == "我的流水":
+            logs = self.db.get_user_logs(user.id, 20)
+            if not logs: return await msg.reply_text("暂无你的交易记录。")
+            rep = f"👤 【{user.first_name}】近20条流水\n━━━━━━━━━━━━━━\n"
+            for t, act, amt, mine in logs:
+                tag = "💣" if mine else "🧧"
+                rep += f"• {t[11:16]} {act} {amt:.2f} {tag}\n"
+            return await msg.reply_text(rep)
+
+        # 4. 总流水 (仅管理员可见抽成)
+        if txt == "流水" and is_adm:
+            total_send, total_mine = self.db.get_group_stats(cid)
+            # 计算总抽成：中雷赔付总额的 5% (假设赔付额等于发包总额)
+            total_profit = total_mine * (total_send / max(1, total_send)) * 100 * COMMISSION # 简化算法
+            rep = (f"📊 【全群财务报表】\n━━━━━━━━━━━━━━\n"
+                   f"累计发包总额：{total_send:.2f}\n"
+                   f"累计中雷次数：{total_mine}\n"
+                   f"💰 预计系统总抽成：{total_send * 0.05:.2f}\n" # 以总流水估算抽成
+                   f"━━━━━━━━━━━━━━\n仅限管理查看")
+            return await msg.reply_text(rep)
+
+        # 5. 上下分
+        if (txt.startswith('+') or txt.startswith('-')) and is_adm:
+            if msg.reply_to_message:
+                target = msg.reply_to_message.from_user
+                self.db.add_balance(target.id, float(txt))
+                self.db.log_action(target.id, "人工上下分", float(txt), 0, cid)
+                await msg.reply_text(f"✅ {target.first_name} 余额：{self.db.get_balance(target.id):.2f}")
             return
 
-        # 3. 管理员上下分逻辑（支持拥有者和群管理员）
-        chat_member = await context.bot.get_chat_member(chat_id, user.id)
-        is_group_admin = chat_member.status in ['administrator', 'creator']
-        
-        if (text.startswith('+') or text.startswith('-')) and is_group_admin:
-            if update.message.reply_to_message:
-                target_user = update.message.reply_to_message.from_user
-                try:
-                    change = float(text)
-                    self.db.add_balance(target_user.id, change)
-                    await update.message.reply_text(f"✅ 操作成功！\n当前余额: {self.db.get_balance(target_user.id):.2f}")
-                except: pass
-            return
+        if txt == "查询":
+            await msg.reply_text(f"💰 余额：{self.db.get_balance(user.id):.2f}")
 
-        # 4. 查询
-        if text == "查询":
-            balance = self.db.get_balance(user.id)
-            await update.message.reply_text(f"👤 {user.first_name}\n💰 余额: {balance:.2f}")
+        # 6. 发包
+        p = r'^(\d+)(?:/(\d+))?/(\d)$'
+        match = re.match(p, txt)
+        if match and group_switch.get(cid):
+            amt, count, mine = float(match.group(1)), int(match.group(2)) if match.group(2) else 10, int(match.group(3))
+            if self.db.get_balance(user.id) < amt: return await msg.reply_text("❌ 余额不足")
+            self.db.add_balance(user.id, -amt)
+            self.db.log_action(user.id, "发包", amt, 0, cid) # 记录发包记录
+            pid = f"pk_{int(time.time()*1000)}"
+            active_packets[pid] = {"total": amt, "amounts": self.gen_amts(amt, count), "count": count, "mine": mine, "owner_id": user.id, "owner_name": user.first_name, "grabbers": [], "cid": cid}
+            await msg.reply_text(f"🧧 {amt}/{count} 雷:{mine}\n门槛:{amt} | 已抢 0/{count}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🧧 抢红包", callback_data=f"grab_{pid}")]]))
 
-        # 5. 发红包逻辑
-        pattern = r'^(\d+)(?:/(\d+))?/(\d)$'
-        match = re.match(pattern, text)
-        if match:
-            amount = float(match.group(1))
-            count = int(match.group(2)) if match.group(2) else 10
-            mine = int(match.group(3))
-            
-            if self.db.get_balance(user.id) < amount:
-                return await update.message.reply_text("❌ 余额不足")
-
-            self.db.add_balance(user.id, -amount)
-            packet_id = f"pk_{int(time.time()*1000)}"
-            active_packets[packet_id] = {
-                "total": amount, "amounts": self.generate_amounts(amount, count),
-                "total_count": count, "mine": mine, "owner_id": user.id,
-                "owner_name": user.first_name, "grabbers": [], "chat_id": chat_id
-            }
-
-            keyboard = [[InlineKeyboardButton("🧧 立即抢红包", callback_data=f"grab_{packet_id}")]]
-            await update.message.reply_text(
-                f"🧧 【红包扫雷】\n━━━━━━━━━━━━━━\n发包：{user.first_name}\n金额：{amount} | 雷号：{mine}\n状态：等待抢包 (0/{count})",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-
-    # 这里的结算逻辑(finalize)和金额分配(generate)保持不变
-    def generate_amounts(self, total, count):
-        amounts = []
-        remaining = total
+    def gen_amts(self, total, count):
+        amts = []
+        rem = total
         for i in range(count - 1):
-            amt = round(random.uniform(0.01, (remaining / (count - i)) * 2), 2)
-            amounts.append(amt)
-            remaining -= amt
-        amounts.append(round(remaining, 2))
-        random.shuffle(amounts)
-        return amounts
+            a = round(random.uniform(0.01, (rem / (count - i)) * 2), 2)
+            amts.append(a); rem -= a
+        amts.append(round(rem, 2))
+        random.shuffle(amts)
+        return amts
 
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        query = update.callback_query
-        user = query.from_user
-        packet_id = query.data.replace("grab_", "")
+        q = update.callback_query; u = q.from_user; pid = q.data.replace("grab_", "")
+        ready, _ = await self.verify_owner(update, context)
+        if not ready or pid not in active_packets: return await q.answer("失效")
+        d = active_packets[pid]
+        if self.db.get_balance(u.id) < d["total"]: return await q.answer(f"需持分{d['total']}", show_alert=True)
+        if any(g['id'] == u.id for g in d["grabbers"]): return await q.answer("已抢")
         
-        # 抢包时也要检查拥有者是否还在
-        is_ready, _ = await self.verify_owner_presence(update, context)
-        if not is_ready:
-            return await query.answer("❌ 授权失效，无法抢包", show_alert=True)
-
-        if packet_id not in active_packets: return
-        data = active_packets[packet_id]
-        
-        if self.db.get_balance(user.id) < data["total"]:
-            return await query.answer(f"⚠️ 余额不足以赔付！", show_alert=True)
-        if any(g['id'] == user.id for g in data["grabbers"]):
-            return await query.answer("❌ 请勿重复抢包", show_alert=True)
-
-        data["grabbers"].append({"id": user.id, "name": user.first_name})
-        grabbed_count = len(data["grabbers"])
-        await query.answer("✅ 抢包成功...")
-
-        if grabbed_count >= data["total_count"]:
-            await self.finalize_packet(packet_id, query.message.message_id, context)
+        d["grabbers"].append({"id": u.id, "name": u.first_name})
+        await q.answer("抢包成功")
+        if len(d["grabbers"]) >= d["count"]:
+            await self.finalize(pid, q.message.message_id, context)
         else:
-            # 实时更新入场名单
-            h_name = f"{user.first_name}*{user.first_name[-1]}" if len(user.first_name)>1 else user.first_name+"*"
-            new_text = query.message.text + f"\n{h_name} 已入场"
-            await query.edit_message_text(text=new_text, reply_markup=query.message.reply_markup)
+            await q.edit_message_text(text=q.message.text + f"\n{u.first_name} 已抢", reply_markup=q.message.reply_markup)
 
-    async def finalize_packet(self, packet_id, msg_id, context):
-        data = active_packets[packet_id]
-        result_lines = [f"🧧 红包结算结果 (雷:{data['mine']})", "━━━━━━━━━━━━━━"]
-        for i, grabber in enumerate(data["grabbers"]):
-            amt = data["amounts"][i]
-            is_mine = (int(str(amt)[-1]) == data["mine"])
-            h_name = f"{grabber['name']}*{grabber['name'][-1]}" if len(grabber['name'])>1 else grabber['name']+"*"
-            line = f"{h_name} -> {amt:.2f}"
+    async def finalize(self, pid, mid, context):
+        d = active_packets[pid]; res = [f"🧧 结算 (雷:{d['mine']})", "━━━━"]
+        for i, g in enumerate(d["grabbers"]):
+            amt = d["amounts"][i]; is_mine = (int(str(amt)[-1]) == d["mine"])
             if is_mine:
-                line += " 💣"
-                self.db.add_balance(data["owner_id"], round(data["total"] * 0.95, 2))
-                self.db.add_balance(grabber['id'], -data["total"])
+                self.db.add_balance(d["owner_id"], round(d["total"] * 0.95, 2))
+                self.db.add_balance(g['id'], -d["total"])
+                self.db.log_action(g['id'], "抢包中雷", -d["total"], 1, d["cid"])
             else:
-                self.db.add_balance(grabber['id'], amt)
-            result_lines.append(line)
-        await context.bot.edit_message_text(chat_id=data["chat_id"], message_id=msg_id, text="\n".join(result_lines))
-        del active_packets[packet_id]
+                self.db.add_balance(g['id'], amt)
+                self.db.log_action(g['id'], "抢包", amt, 0, d["cid"])
+            res.append(f"{g['name']}->{amt} {'💣' if is_mine else ''}")
+        await context.bot.edit_message_text(chat_id=d["cid"], message_id=mid, text="\n".join(res))
+        del active_packets[pid]

@@ -22,14 +22,16 @@ class BotHandlers:
         return True, ""
 
     def mask_name(self, name):
-        """改进的名字脱敏逻辑"""
+        """改进的名字脱敏逻辑：张三丰 -> 张*丰，短名原样显示"""
         if not name: return "*"
-        if len(name) <= 2: return name 
-        return f"{name[0]}*{name[-1]}"
+        n_str = str(name)
+        if len(n_str) <= 2: return n_str 
+        return f"{n_str[0]}*{n_str[-1]}"
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        msg = update.message; user = update.effective_user; cid = update.effective_chat.id
+        msg = update.message; user = update.effective_user
         if not msg or not msg.text: return
+        cid = update.effective_chat.id
         txt = msg.text.strip()
 
         if txt == "开启" and user.id == OWNER_ID:
@@ -61,7 +63,7 @@ class BotHandlers:
         if txt == "查询":
             return await msg.reply_text(f"💰 余额：{self.db.get_balance(user.id):.2f}")
 
-        # 发包逻辑
+        # 发包
         packet_match = re.match(r'^(\d+)(?:/(\d+))?/(\d)$', txt)
         if packet_match:
             amt = float(packet_match.group(1)); count = int(packet_match.group(2)) if packet_match.group(2) else 10; mine = int(packet_match.group(3))
@@ -86,7 +88,7 @@ class BotHandlers:
         ready, _ = await self.verify_owner(update, context)
         if not ready or pid not in active_packets: return await q.answer("失效")
         d = active_packets[pid]
-        if self.db.get_balance(u.id) < d["total"]: return await q.answer(f"持分不足{d['total']}", show_alert=True)
+        if self.db.get_balance(u.id) < d["total"]: return await q.answer(f"需持分{d['total']}", show_alert=True)
         if any(g['id'] == u.id for g in d["grabbers"]): return await q.answer("已抢过")
         
         d["grabbers"].append({"id": u.id, "name": u.first_name})
@@ -99,7 +101,6 @@ class BotHandlers:
             name_list = []
             for i, g in enumerate(d["grabbers"]):
                 m_name = self.mask_name(g['name'])
-                # 倒数第二个包逻辑
                 if i == d["count"] - 2:
                     name_list.append(f"{i+1}. {m_name} -> 🔐 防计算中...")
                 else:

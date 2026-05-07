@@ -12,18 +12,19 @@ class SQLiteDB:
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("CREATE TABLE IF NOT EXISTS users (uid TEXT PRIMARY KEY, balance REAL DEFAULT 0)")
+            # 核心修改：用户表增加 chat_id 字段，主键改为 uid + chat_id 组合
+            conn.execute("CREATE TABLE IF NOT EXISTS users (uid TEXT, chat_id TEXT, balance REAL DEFAULT 0, PRIMARY KEY (uid, chat_id))")
             conn.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT, action TEXT, amount REAL, is_mine INTEGER, chat_id TEXT, timestamp TEXT)")
             conn.commit()
 
-    def get_balance(self, uid):
+    def get_balance(self, uid, chat_id):
         with sqlite3.connect(self.db_path) as conn:
-            res = conn.execute("SELECT balance FROM users WHERE uid=?", (str(uid),)).fetchone()
+            res = conn.execute("SELECT balance FROM users WHERE uid=? AND chat_id=?", (str(uid), str(chat_id))).fetchone()
             return res[0] if res else 0.0
 
-    def add_balance(self, uid, amount):
+    def add_balance(self, uid, chat_id, amount):
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("INSERT INTO users (uid, balance) VALUES (?, ?) ON CONFLICT(uid) DO UPDATE SET balance = balance + ?", (str(uid), amount, amount))
+            conn.execute("INSERT INTO users (uid, chat_id, balance) VALUES (?, ?, ?) ON CONFLICT(uid, chat_id) DO UPDATE SET balance = balance + ?", (str(uid), str(chat_id), amount, amount))
             conn.commit()
 
     def log_action(self, uid, action, amount, is_mine, chat_id):
@@ -32,9 +33,9 @@ class SQLiteDB:
             conn.execute("INSERT INTO logs (uid, action, amount, is_mine, chat_id, timestamp) VALUES (?,?,?,?,?,?)", (str(uid), action, amount, is_mine, str(chat_id), bj_time))
             conn.commit()
 
-    def get_user_logs(self, uid, limit=100):
+    def get_user_logs(self, uid, chat_id, limit=100):
         with sqlite3.connect(self.db_path) as conn:
-            return conn.execute("SELECT timestamp, action, amount, is_mine FROM logs WHERE uid=? ORDER BY id DESC LIMIT ?", (str(uid), limit)).fetchall()
+            return conn.execute("SELECT timestamp, action, amount, is_mine FROM logs WHERE uid=? AND chat_id=? ORDER BY id DESC LIMIT ?", (str(uid), str(chat_id), limit)).fetchall()
 
     def get_group_stats(self, chat_id):
         with sqlite3.connect(self.db_path) as conn:
@@ -42,9 +43,9 @@ class SQLiteDB:
             tm = conn.execute("SELECT COUNT(*) FROM logs WHERE action='抢包中雷' AND chat_id=?", (str(chat_id),)).fetchone()[0] or 0
             return ts, tm
 
-    def get_all_balances(self):
+    def get_all_balances(self, chat_id):
         with sqlite3.connect(self.db_path) as conn:
-            return conn.execute("SELECT uid, balance FROM users ORDER BY balance DESC").fetchall()
+            return conn.execute("SELECT uid, balance FROM users WHERE chat_id=? ORDER BY balance DESC", (str(chat_id),)).fetchall()
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")

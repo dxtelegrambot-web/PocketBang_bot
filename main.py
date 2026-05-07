@@ -57,7 +57,6 @@ def main():
     app.add_handler(CommandHandler("start", bot_handlers.handle_start))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), bot_handlers.handle_message))
     app.add_handler(CallbackQueryHandler(bot_handlers.handle_callback))
-    print("🚀 机器人已启动，监听所有消息...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':

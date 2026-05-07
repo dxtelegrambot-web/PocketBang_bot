@@ -37,13 +37,13 @@ class BotHandlers:
         # 开启/关闭
         if txt == "开启" and user.id == OWNER_ID:
             group_switch[cid] = True
-            return await msg.reply_text("✅ 系统已启动，所有指令已对齐。")
+            return await msg.reply_text("✅ 机器人已启动")
         if txt == "关闭" and user.id == OWNER_ID:
             group_switch[cid] = False
             return await msg.reply_text("💤 系统已休眠。")
 
         ready, alert = await self.verify_owner(update, context)
-        if not ready and txt in ["查询", "流水", "总计", "我的流水"] or "/" in txt:
+        if not ready and txt in ["余额", "群流水", "总计", "我的流水"] or "/" in txt:
             return await msg.reply_text(alert)
 
         # 检查是否是管理员

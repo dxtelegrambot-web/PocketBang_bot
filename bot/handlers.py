@@ -1,8 +1,7 @@
-import random, re, time, asyncio
+import random, re, time, asyncio, sqlite3
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-# --- 核心配置 ---
 OWNER_ID = 7653037721
 COMMISSION = 0.05 
 active_packets = {}
@@ -23,23 +22,17 @@ class BotHandlers:
         try:
             o = await context.bot.get_chat_member(cid, OWNER_ID)
             if o.status not in ['administrator', 'creator']: return False, "❌ 权限熔断：拥有者非管理。"
-        except: return False, "❌ 拥有者不在群内。"
+        except: return False, "❌ 权限熔断：拥有者不在群内。"
         return True, ""
 
     async def handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         txt = update.message.text
         if "all_logs_" in txt:
-            try:
-                # 获取特定群组的流水
-                target_cid = txt.split("all_logs_")[1]
-                logs = self.db.get_user_logs(update.effective_user.id, target_cid, 50)
-                if not logs: return await update.message.reply_text("该群暂无你的账单记录。")
-                rep = f"📊 【个人明细】群ID: {target_cid}\n━━━━━━━━━━━━━━\n"
-                for t, act, amt, mine in logs:
-                    symbol = "+" if amt > 0 else ""
-                    rep += f"• {t[5:16]} {act} {symbol}{amt:.2f}\n"
-                return await update.message.reply_text(rep)
-            except: pass
+            target_cid = txt.split("all_logs_")[-1]
+            logs = self.db.get_user_logs(update.effective_user.id, target_cid, 50)
+            if not logs: return await update.message.reply_text("暂无账单记录。")
+            rep = f"📊 【个人账单】\n" + "\n".join([f"• {t[5:16]} {act} {'+' if amt>0 else ''}{amt:.2f}" for t, act, amt, mine in logs])
+            return await update.message.reply_text(rep)
         await update.message.reply_text("🤖 扫雷系统已就绪。")
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -47,98 +40,71 @@ class BotHandlers:
         if not msg or not msg.text: return
         txt = msg.text.strip()
 
+        # 1. 开启/关闭
         if txt == "开启" and user.id == OWNER_ID:
             group_switch[cid] = True
-            return await msg.reply_text("✅ 机器人已启动！")
+            return await msg.reply_text("✅ 机器人已启动！\n请设置规则，格式如：\n金额50~1000/包数10~20")
         if txt == "关闭" and user.id == OWNER_ID:
             group_switch[cid] = False
-            return await msg.reply_text("💤 机器人已休眠。")
+            return await msg.reply_text("💤 系统已休眠。")
+
+        # 2. 设置规则指令 (仅管理员)
+        conf_match = re.match(r'^金额(\d+)~(\d+)/包数(\d+)~(\d+)$', txt)
+        if conf_match:
+            m = await context.bot.get_chat_member(cid, user.id)
+            if m.status in ['administrator', 'creator'] or user.id == OWNER_ID:
+                mina, maxa, minc, maxc = map(int, conf_match.groups())
+                self.db.set_config(cid, mina, maxa, minc, maxc)
+                return await msg.reply_text(f"⚙️ 规则设置成功！\n💰 金额：{mina}~{maxa}\n📦 包数：{minc}~{maxc}")
 
         ready, alert = await self.verify_owner(update, context)
-        if not ready:
-            if any(x in txt for x in ["查询", "账单", "总计"]) or re.match(r'^\d+/', txt):
-                await msg.reply_text(alert)
-            return
+        if not ready and (re.match(r'^\d+/', txt) or txt in ["查询", "账单"]):
+            return await msg.reply_text(alert)
 
         m = await context.bot.get_chat_member(cid, user.id)
         is_adm = m.status in ['administrator', 'creator'] or user.id == OWNER_ID
 
-        # 上下分
+        # 3. 基础指令
         if (txt.startswith('+') or txt.startswith('-')) and is_adm:
             if msg.reply_to_message:
                 target = msg.reply_to_message.from_user
-                try:
-                    num = float(txt.replace(' ', ''))
-                    self.db.add_balance(target.id, cid, num)
-                    self.db.log_action(target.id, "人工上下分", num, 0, cid)
-                    return await msg.reply_text(f"✅ {target.first_name} 余额：{self.db.get_balance(target.id, cid):.2f}")
-                except: pass
+                num = float(txt.replace(' ', ''))
+                self.db.add_balance(target.id, cid, num)
+                self.db.log_action(target.id, "人工上下分", num, 0, cid)
+                return await msg.reply_text(f"✅ {target.first_name} 余额：{self.db.get_balance(target.id, cid):.2f}")
 
         if txt == "查询":
             return await msg.reply_text(f"💰 余额：{self.db.get_balance(user.id, cid):.2f}")
 
-        if txt == "我的流水":
-            logs = self.db.get_user_logs(user.id, cid, 20)
-            rep = f"👤 【{user.first_name}】近20条流水\n" + "\n".join([f"• {t[11:16]} {act} {'+' if amt>0 else ''}{amt:.2f}" for t, act, amt, mine in logs])
-            kb = [[InlineKeyboardButton("📩 查看全部流水", url=f"t.me/{context.bot.username}?start=all_logs_{cid}")]]
-            return await msg.reply_text(rep, reply_markup=InlineKeyboardMarkup(kb))
-
-        # 改名后的【账单】指令 (修正盈利逻辑)
         if txt == "账单" and is_adm:
             ts, tm = self.db.get_group_stats(cid)
-            # 这里的 tm 现在代表中雷次数。由于每次中雷赔付额不固定，
-            # 我们需要从数据库中提取该群所有“中雷收入”动作的总和来计算真正的 5% 盈利。
-            # 这里用逻辑估算：盈利 = (中雷收入总额 / 0.95) * 0.05
-            try:
-                # 获取中雷赔付给发包者的总额
-                with self.db.sqlite3.connect(self.db.db_path) as conn:
-                    pay_total = conn.execute("SELECT SUM(amount) FROM logs WHERE action LIKE '中雷收入%' AND chat_id=?", (str(cid),)).fetchone()[0] or 0
-                
-                real_profit = (pay_total / 0.95) * 0.05 if pay_total > 0 else 0
-                
-                rep = (f"📊 【{msg.chat.title}】财务账单\n"
-                       f"━━━━━━━━━━━━━━\n"
-                       f"1. 发包总金额：{ts:.2f}\n"
-                       f"2. 累计中雷数：{tm}\n"
-                       f"3. 中雷总赔付：{pay_total / 0.95:.2f}\n"
-                       f"4. 系统净利润：{real_profit:.2f}\n"
-                       f"━━━━━━━━━━━━━━\n账单已私信管理员。")
-                
-                await context.bot.send_message(user.id, rep)
-                await msg.reply_text("✅ 详细账单已私信。")
-            except Exception as e:
-                await msg.reply_text(f"❌ 账单生成失败，请确认是否已私聊机器人。")
-            return
+            # 这里的数据库路径需要根据 main.py 里的位置确定，默认为主目录
+            conn = sqlite3.connect("bot_data.db")
+            pay_total = conn.execute("SELECT SUM(amount) FROM logs WHERE action LIKE '中雷收入%' AND chat_id=?", (str(cid),)).fetchone()[0] or 0
+            conn.close()
+            real_profit = (pay_total / 0.95) * 0.05 if pay_total > 0 else 0
+            rep = (f"📊 【{msg.chat.title}】账单\n━━━━━━━━━━━━━━\n发包总额：{ts:.2f}\n中雷次数：{tm}\n中雷总赔付：{pay_total / 0.95:.2f}\n系统净利润：{real_profit:.2f}")
+            await context.bot.send_message(user.id, rep)
+            return await msg.reply_text("✅ 详细账单已私信。")
 
-        if txt == "总计" and is_adm:
-            data = self.db.get_all_balances(cid)
-            rep = "💰 【资产排行】\n" + "\n".join([f"{i+1}. ID:{u} -> {b:.2f}" for i, (u, b) in enumerate(data[:10])])
-            return await msg.reply_text(rep)
-
+        # 4. 发红包逻辑 (核心：校验自定义规则)
         packet_match = re.match(r'^(\d+)(?:/(\d+))?/(\d)$', txt)
         if packet_match:
             amt = float(packet_match.group(1)); count = int(packet_match.group(2)) if packet_match.group(2) else 10; mine = int(packet_match.group(3))
-            if self.db.get_balance(user.id, cid) < amt: return await msg.reply_text("❌ 余额不足")
+            mina, maxa, minc, maxc = self.db.get_config(cid)
+            
+            if not (mina <= amt <= maxa):
+                return await msg.reply_text(f"❌ 金额不符！本群限制：{mina}~{maxa}")
+            if not (minc <= count <= maxc):
+                return await msg.reply_text(f"❌ 包数不符！本群限制：{minc}~{maxc}")
+            if self.db.get_balance(user.id, cid) < amt:
+                return await msg.reply_text("❌ 余额不足")
+
             self.db.add_balance(user.id, cid, -amt)
             self.db.log_action(user.id, "发包", -amt, 0, cid)
             pid = f"pk_{int(time.time()*1000)}"
-            task = asyncio.create_task(self.timer_refund(pid, cid, context))
-            active_packets[pid] = {"total": amt, "amounts": self.gen_amts(amt, count), "count": count, "mine": mine, "owner_id": user.id, "owner_name": user.first_name, "grabbers": [], "cid": cid, "task": task}
-            kb = [[InlineKeyboardButton("🧧 立即抢包", callback_data=f"grab_{pid}")]]
-            sent_msg = await msg.reply_text(f"🧧 【红包扫雷】\n━━━━━━━━━━━━━━\n发包：{user.first_name}\n金额：{amt} | 雷：{mine} | 包：{count}\n━━━━━━━━━━━━━━\n等待入场... (0/{count})", reply_markup=InlineKeyboardMarkup(kb))
-            active_packets[pid]["mid"] = sent_msg.message_id
-
-    async def timer_refund(self, pid, cid, context):
-        await asyncio.sleep(600)
-        if pid in active_packets:
-            d = active_packets[pid]
-            grabbed_count = len(d["grabbers"])
-            unclaimed = sum(d["amounts"][grabbed_count:])
-            if unclaimed > 0:
-                self.db.add_balance(d["owner_id"], cid, unclaimed)
-                self.db.log_action(d["owner_id"], "过期退还", unclaimed, 0, cid)
-                await context.bot.send_message(cid, f"⏰ 红包到期！退回给 {d['owner_name']}：{unclaimed:.2f}")
-            await self.finalize(pid, d["mid"], context)
+            active_packets[pid] = {"total": amt, "amounts": self.gen_amts(amt, count), "count": count, "mine": mine, "owner_id": user.id, "owner_name": user.first_name, "grabbers": [], "cid": cid}
+            return await msg.reply_text(f"🧧 {amt}/{count} 雷:{mine}\n等待抢包...", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🧧 立即抢包", callback_data=f"grab_{pid}")]]))
 
     def gen_amts(self, total, count):
         amts = []; rem = total
@@ -153,12 +119,11 @@ class BotHandlers:
         ready, _ = await self.verify_owner(update, context)
         if not ready or pid not in active_packets: return await q.answer("失效")
         d = active_packets[pid]
-        if self.db.get_balance(u.id, d["cid"]) < d["total"]: return await q.answer(f"需持分{d['total']}", show_alert=True)
+        if self.db.get_balance(u.id, d["cid"]) < d["total"]: return await q.answer(f"持分不足{d['total']}", show_alert=True)
         if any(g['id'] == u.id for g in d["grabbers"]): return await q.answer("已抢过")
+        
         d["grabbers"].append({"id": u.id, "name": u.first_name})
-        if len(d["grabbers"]) >= d["count"]: 
-            d["task"].cancel()
-            await self.finalize(pid, q.message.message_id, context)
+        if len(d["grabbers"]) >= d["count"]: await self.finalize(pid, q.message.message_id, context)
         else:
             name_list = []
             for i, g in enumerate(d["grabbers"]):
@@ -167,7 +132,7 @@ class BotHandlers:
                 else:
                     amt = d["amounts"][i]; is_m = (int(str(amt)[-1]) == d["mine"])
                     name_list.append(f"{i+1}. {m_name} -> {amt:.2f} {'💣' if is_m else ''}")
-            await q.edit_message_text(text=f"🧧 【红包扫雷】\n━━━━━━━━━━━━━━\n发包：{d['owner_name']}\n金额：{d['total']} | 雷：{d['mine']} | 包：{d['count']}\n━━━━━━━━━━━━━━\n" + "\n".join(name_list) + f"\n\n正在抢包... ({len(d['grabbers'])}/{d['count']})", reply_markup=q.message.reply_markup)
+            await q.edit_message_text(text=f"🧧 扫雷\n━━━━━━━━━━━━━━\n发包：{d['owner_name']}\n金额：{d['total']} | 雷：{d['mine']} | 包：{d['count']}\n━━━━━━━━━━━━━━\n" + "\n".join(name_list), reply_markup=q.message.reply_markup)
 
     async def finalize(self, pid, mid, context):
         d = active_packets.pop(pid, None)

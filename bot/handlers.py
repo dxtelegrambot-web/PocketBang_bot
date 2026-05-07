@@ -23,14 +23,14 @@ class BotHandlers:
         return True, ""
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        msg = update.message; user = update.effective_user; cid = msg.chat_id
+        msg = update.message; user = update.effective_user; cid = msg.chat_id if msg else None
         if not msg or not msg.text: return
         txt = msg.text
 
         # 开启/关闭
         if txt == "开启" and user.id == OWNER_ID:
             group_switch[cid] = True
-            return await msg.reply_text("✅ 开启成功，流水系统已升级。")
+            return await msg.reply_text("✅ 开启成功，赔付流水已补全。")
         if txt == "关闭" and user.id == OWNER_ID:
             group_switch[cid] = False
             return await msg.reply_text("💤 系统已休眠。")
@@ -48,9 +48,9 @@ class BotHandlers:
             try:
                 ts, tm = self.db.get_group_stats(cid)
                 profit = ts * COMMISSION
-                rep = f"📊 【财务报表】\n群ID: {cid}\n发包总额: {ts:.2f}\n中雷数: {tm}\n预计抽成: {profit:.2f}"
+                rep = f"📊 【财务报表】\n群组: {msg.chat.title}\n总发包: {ts:.2f}\n中雷数: {tm}\n系统盈利: {profit:.2f}"
                 await context.bot.send_message(user.id, rep)
-                await msg.reply_text("✅ 详细流水已私信。")
+                await msg.reply_text("✅ 详细报表已私信。")
             except: await msg.reply_text("❌ 请先私聊机器人点 /start")
             return
 
@@ -60,7 +60,7 @@ class BotHandlers:
             rep = "💰 【资产排行】\n" + "\n".join([f"{i+1}. ID:{u} -> {b:.2f}" for i, (u, b) in enumerate(data[:10])])
             return await msg.reply_text(rep)
 
-        # 个人流水 (群内显示20条 + 私聊全部按钮)
+        # 个人流水
         if txt == "我的流水":
             logs = self.db.get_user_logs(user.id, 20)
             if not logs: return await msg.reply_text("暂无记录")
@@ -70,15 +70,15 @@ class BotHandlers:
                 tag = "💣" if mine else "🧧"
                 rep += f"• {t[11:16]} {act} {symbol}{amt:.2f} {tag}\n"
             
-            kb = [[InlineKeyboardButton("📩 私聊查看全部流水", url=f"t.me/{context.bot.username}?start=all_logs")]]
+            kb = [[InlineKeyboardButton("📩 查看全部流水", url=f"t.me/{context.bot.username}?start=all_logs")]]
             await msg.reply_text(rep, reply_markup=InlineKeyboardMarkup(kb))
             return
 
-        # 处理私聊中的“查看全部流水”请求
+        # 私聊入口逻辑
         if txt.startswith("/start all_logs") or (msg.chat.type == "private" and txt == "/start"):
-            logs = self.db.get_user_logs(user.id, 100) # 私聊给最近100条
-            if not logs: return await msg.reply_text("暂无历史记录。")
-            rep = f"📊 【{user.first_name}】全量流水明细\n━━━━━━━━━━━━━━\n"
+            logs = self.db.get_user_logs(user.id, 50)
+            if not logs: return await msg.reply_text("暂无记录。")
+            rep = f"📊 【{user.first_name}】全量明细\n━━━━━━━━━━━━━━\n"
             for t, act, amt, mine in logs:
                 symbol = "+" if amt > 0 else ""
                 tag = "💣" if mine else "🧧"
@@ -98,7 +98,7 @@ class BotHandlers:
         if txt == "查询":
             await msg.reply_text(f"💰 余额：{self.db.get_balance(user.id):.2f}")
 
-        # 发包
+        # 发包指令解析
         p = r'^(\d+)(?:/(\d+))?/(\d)$'
         match = re.match(p, txt)
         if match:
@@ -111,8 +111,7 @@ class BotHandlers:
             await msg.reply_text(f"🧧 {amt}/{count} 雷:{mine}\n等待抢包...", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🧧 抢红包", callback_data=f"grab_{pid}")]]))
 
     def gen_amts(self, total, count):
-        amts = []
-        rem = total
+        amts = []; rem = total
         for i in range(count - 1):
             a = round(random.uniform(0.01, (rem / (count - i)) * 2), 2)
             amts.append(a); rem -= a
@@ -125,7 +124,7 @@ class BotHandlers:
         ready, _ = await self.verify_owner(update, context)
         if not ready or pid not in active_packets: return await q.answer("失效")
         d = active_packets[pid]
-        if self.db.get_balance(u.id) < d["total"]: return await q.answer(f"需持分{d['total']}", show_alert=True)
+        if self.db.get_balance(u.id) < d["total"]: return await q.answer(f"持分不足{d['total']}", show_alert=True)
         if any(g['id'] == u.id for g in d["grabbers"]): return await q.answer("已抢过")
         d["grabbers"].append({"id": u.id, "name": u.first_name})
         await q.answer("抢包成功")
@@ -137,16 +136,20 @@ class BotHandlers:
         d = active_packets[pid]; res = [f"🧧 结果 (雷:{d['mine']})", "━━━━"]
         for i, g in enumerate(d["grabbers"]):
             amt = d["amounts"][i]; is_mine = (int(str(amt)[-1]) == d["mine"])
-            # 无论中不中雷，都先记录这一笔抢到的金额
+            
+            # 1. 记录抢到的流水
             self.db.add_balance(g['id'], amt) 
             self.db.log_action(g['id'], "抢到红包", amt, 0, d["cid"])
             
             if is_mine:
-                # 如果中雷，紧接着记录一笔扣除
+                # 2. 中雷者扣款流水
                 self.db.add_balance(g['id'], -d["total"])
-                # 发包者收 95%
-                self.db.add_balance(d["owner_id"], round(d["total"] * (1 - COMMISSION), 2))
                 self.db.log_action(g['id'], "抢包中雷", -d["total"], 1, d["cid"])
+                
+                # 3. 【核心修正】记录发包者的中雷收入流水 (+95.00)
+                income = round(d["total"] * (1 - COMMISSION), 2)
+                self.db.add_balance(d["owner_id"], income)
+                self.db.log_action(d["owner_id"], f"中雷收入(来自{g['name']})", income, 0, d["cid"])
             
             res.append(f"{g['name']}->{amt} {'💣' if is_mine else ''}")
         await context.bot.edit_message_text(chat_id=d["cid"], message_id=mid, text="\n".join(res))

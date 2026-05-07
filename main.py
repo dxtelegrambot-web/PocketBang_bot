@@ -12,9 +12,12 @@ class SQLiteDB:
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
-            # 核心修改：用户表增加 chat_id 字段，主键改为 uid + chat_id 组合
+            # 用户表
             conn.execute("CREATE TABLE IF NOT EXISTS users (uid TEXT, chat_id TEXT, balance REAL DEFAULT 0, PRIMARY KEY (uid, chat_id))")
+            # 流水表
             conn.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT, action TEXT, amount REAL, is_mine INTEGER, chat_id TEXT, timestamp TEXT)")
+            # 群设置表 (新增：存储每个群的金额和包数范围)
+            conn.execute("CREATE TABLE IF NOT EXISTS settings (chat_id TEXT PRIMARY KEY, min_amt REAL, max_amt REAL, min_cnt INTEGER, max_cnt INTEGER)")
             conn.commit()
 
     def get_balance(self, uid, chat_id):
@@ -33,23 +36,28 @@ class SQLiteDB:
             conn.execute("INSERT INTO logs (uid, action, amount, is_mine, chat_id, timestamp) VALUES (?,?,?,?,?,?)", (str(uid), action, amount, is_mine, str(chat_id), bj_time))
             conn.commit()
 
+    def set_config(self, chat_id, min_a, max_a, min_c, max_c):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("INSERT INTO settings VALUES (?,?,?,?,?) ON CONFLICT(chat_id) DO UPDATE SET min_amt=?, max_amt=?, min_cnt=?, max_cnt=?", (str(chat_id), min_a, max_a, min_c, max_c, min_a, max_a, min_c, max_c))
+            conn.commit()
+
+    def get_config(self, chat_id):
+        with sqlite3.connect(self.db_path) as conn:
+            res = conn.execute("SELECT min_amt, max_amt, min_cnt, max_cnt FROM settings WHERE chat_id=?", (str(chat_id),)).fetchone()
+            return res if res else (20, 1000, 1, 10) # 默认值
+
     def get_user_logs(self, uid, chat_id, limit=100):
         with sqlite3.connect(self.db_path) as conn:
             return conn.execute("SELECT timestamp, action, amount, is_mine FROM logs WHERE uid=? AND chat_id=? ORDER BY id DESC LIMIT ?", (str(uid), str(chat_id), limit)).fetchall()
 
     def get_group_stats(self, chat_id):
         with sqlite3.connect(self.db_path) as conn:
-            ts = conn.execute("SELECT SUM(ABS(amount)) FROM logs WHERE action='发包' AND chat_id=?", (str(chat_id),)).fetchone()[0] or 0
-            tm = conn.execute("SELECT COUNT(*) FROM logs WHERE action='抢包中雷' AND chat_id=?", (str(chat_id),)).fetchone()[0] or 0
-            return ts, tm
-
-    def get_all_balances(self, chat_id):
-        with sqlite3.connect(self.db_path) as conn:
-            return conn.execute("SELECT uid, balance FROM users WHERE chat_id=? ORDER BY balance DESC", (str(chat_id),)).fetchall()
+            ts = conn.execute("SELECT SUM(ABS(amount)) FROM logs WHERE action='发包' AND chat_id=?", (str(chat_id),)).fetchone() or [0]
+            tm = conn.execute("SELECT COUNT(*) FROM logs WHERE action='抢包中雷' AND chat_id=?", (str(chat_id),)).fetchone() or [0]
+            return ts[0] if ts[0] else 0, tm[0]
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-logging.basicConfig(level=logging.INFO)
 db = SQLiteDB()
 bot_handlers = BotHandlers(db)
 

@@ -23,7 +23,8 @@ class BotHandlers:
 
     def mask_name(self, name):
         """改进的名字脱敏逻辑"""
-        if len(name) <= 2: return name # 低于等于两个字直接显示
+        if not name: return "*"
+        if len(name) <= 2: return name 
         return f"{name[0]}*{name[-1]}"
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -60,7 +61,7 @@ class BotHandlers:
         if txt == "查询":
             return await msg.reply_text(f"💰 余额：{self.db.get_balance(user.id):.2f}")
 
-        # 发包
+        # 发包逻辑
         packet_match = re.match(r'^(\d+)(?:/(\d+))?/(\d)$', txt)
         if packet_match:
             amt = float(packet_match.group(1)); count = int(packet_match.group(2)) if packet_match.group(2) else 10; mine = int(packet_match.group(3))
@@ -68,7 +69,6 @@ class BotHandlers:
             self.db.add_balance(user.id, -amt)
             self.db.log_action(user.id, "发包", -amt, 0, cid)
             pid = f"pk_{int(time.time()*1000)}"
-            # 预生成全随机金额
             active_packets[pid] = {"total": amt, "amounts": self.gen_amts(amt, count), "count": count, "mine": mine, "owner_id": user.id, "owner_name": user.first_name, "grabbers": [], "cid": cid}
             kb = [[InlineKeyboardButton("🧧 立即抢包", callback_data=f"grab_{pid}")]]
             return await msg.reply_text(f"🧧 【红包扫雷】\n━━━━━━━━━━━━━━\n发包：{user.first_name}\n金额：{amt} | 雷：{mine} | 包：{count}\n━━━━━━━━━━━━━━\n等待入场... (0/{count})", reply_markup=InlineKeyboardMarkup(kb))
@@ -99,7 +99,7 @@ class BotHandlers:
             name_list = []
             for i, g in enumerate(d["grabbers"]):
                 m_name = self.mask_name(g['name'])
-                # 逻辑：如果是倒数第二个包，显示隐藏文字
+                # 倒数第二个包逻辑
                 if i == d["count"] - 2:
                     name_list.append(f"{i+1}. {m_name} -> 🔐 防计算中...")
                 else:
@@ -114,7 +114,7 @@ class BotHandlers:
 
     async def finalize(self, pid, mid, context):
         d = active_packets.pop(pid, None)
-        if not d: return
+        if not d or not d["grabbers"]: return
         res = [f"🧧 结算结果 (雷:{d['mine']})", "━━━━━━━━━━━━━━"]
         for i, g in enumerate(d["grabbers"]):
             amt = d["amounts"][i]; is_mine = (int(str(amt)[-1]) == d["mine"])

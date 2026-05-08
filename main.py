@@ -12,11 +12,8 @@ class SQLiteDB:
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
-            # 存储用户信息和群名字
             conn.execute("CREATE TABLE IF NOT EXISTS users (uid TEXT, chat_id TEXT, balance REAL DEFAULT 0, name TEXT, PRIMARY KEY (uid, chat_id))")
-            # 存储流水记录
             conn.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT, action TEXT, amount REAL, chat_id TEXT, timestamp TEXT)")
-            # 存储群规则和群名字
             conn.execute("CREATE TABLE IF NOT EXISTS settings (chat_id TEXT PRIMARY KEY, min_amt REAL, max_amt REAL, min_cnt INTEGER, max_cnt INTEGER, group_name TEXT)")
             conn.commit()
 
@@ -46,7 +43,7 @@ class SQLiteDB:
     def get_config(self, chat_id):
         with sqlite3.connect(self.db_path) as conn:
             res = conn.execute("SELECT min_amt, max_amt, min_cnt, max_cnt, group_name FROM settings WHERE chat_id=?", (str(chat_id),)).fetchone()
-            return res if res else (20, 1000, 1, 10, "未命名群组")
+            return res if res else (20.0, 1000.0, 1, 10, "未知群组")
 
     def get_user_logs(self, uid, chat_id, limit=100):
         with sqlite3.connect(self.db_path) as conn:
@@ -64,7 +61,6 @@ bot_handlers = BotHandlers(db)
 
 def main():
     app = Application.builder().token(TOKEN).build()
-    # /start 指令必须注册用于私聊唤醒报表
     app.add_handler(CommandHandler("start", bot_handlers.handle_start))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), bot_handlers.handle_message))
     app.add_handler(CallbackQueryHandler(bot_handlers.handle_callback))

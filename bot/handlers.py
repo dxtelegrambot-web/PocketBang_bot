@@ -21,7 +21,8 @@ class BotHandlers:
         if not group_switch.get(cid): return False, "⚠️ 机器人未开启。"
         try:
             o = await context.bot.get_chat_member(cid, OWNER_ID)
-            if o.status not in ['administrator', 'creator']: return False, "❌ 权限熔断。"
+            if o.status not in ['administrator', 'creator']: 
+                return False, "❌ 权限熔断：拥有者失去管理权。"
         except: return False, "❌ 权限熔断。"
         return True, ""
 
@@ -33,30 +34,30 @@ class BotHandlers:
             rep = f"📊 【全部流水】群:{conf}\n━━━━━━━━━━━━━━\n"
             rep += "\n".join([f"• {t[5:16]} {act} {amt:+.2f}" for t, act, amt in logs])
             return await update.message.reply_text(rep if logs else "暂无记录")
+        
         if "total_assets_" in txt:
             cid = txt.split("total_assets_")[-1]; conf = self.db.get_config(cid)[-1]; data = self.db.get_all_balances(cid)
             rep = f"💰 【{conf}】总账单\n总持分：{sum(b for n,b in data):.2f}\n━━━━━━━━━━━━━━\n"
             rep += "\n".join([f"{i+1}. {self.mask_name(n)} -> {b:.2f}" for i, (n, b) in enumerate(data[:20])])
             return await update.message.reply_text(rep if data else "暂无数据")
+        
         if "stats_" in txt:
-            parts = txt.split("_"); cid = parts[1]; page = int(parts[2]) if len(parts) > 2 else 0; offset = page * 20
-            conf = self.db.get_config(cid)[-1]
+            parts = txt.split("_"); cid = parts[1]; page = int(parts[2]) if len(parts) > 2 else 0
+            offset = page * 20; conf = self.db.get_config(cid)[-1]
             with sqlite3.connect(self.db.db_path) as conn:
                 ts = conn.execute("SELECT SUM(ABS(amount)) FROM logs WHERE action='发包' AND chat_id=?", (str(cid),)).fetchone()[0] or 0
                 all_m = conn.execute("SELECT timestamp, action, amount FROM logs WHERE action LIKE '中雷收入%' AND chat_id=? ORDER BY id DESC", (str(cid),)).fetchall()
             profit = sum(x[2] for x in all_m) / 0.95 * 0.05 if all_m else 0
-            rep = f"📊 【{conf}】详细账单\n━━━━━━━━━━━━━━\n发包总额：{ts:.2f}\n系统抽成：{profit:.2f}\n\n📜 中雷明细(每页20)：\n"
+            rep = f"📊 【{conf}】详细账单\n━━━━━━━━━━━━━━\n总发包金额：{ts:.2f}\n系统净抽成：{profit:.2f}\n\n📜 中雷明细：\n"
             for i, (t, act, amt) in enumerate(all_m[offset:offset+20]):
                 link = re.search(r'\[🔗\]\((.*?)\)', act)
                 l_str = f" [跳转]({link.group(1)})" if link else ""
                 nm = re.sub(r'\[🔗\].*?\)', '', act).replace("中雷收入(来自", "").replace(")", "").strip()
                 rep += f"{offset+i+1}. {t[5:16]}+{nm}+发{amt/0.95:.0f}+抽{amt/0.95*0.05:.2f}{l_str}\n"
-            btns = []
-            if page > 0: btns.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"page_{cid}_{page-1}"))
+            btns = [InlineKeyboardButton("⬅️ 上一页", callback_data=f"page_{cid}_{page-1}")] if page > 0 else []
             if len(all_m) > offset + 20: btns.append(InlineKeyboardButton("下一页 ➡️", callback_data=f"page_{cid}_{page+1}"))
             m_f = update.callback_query.edit_message_text if update.callback_query else update.message.reply_text
             return await m_f(rep, reply_markup=InlineKeyboardMarkup([btns]) if btns else None, parse_mode="Markdown", disable_web_page_preview=True)
-        await update.message.reply_text("🤖 系统就绪。")
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = update.message; user = update.effective_user; chat = update.effective_chat
@@ -94,11 +95,10 @@ class BotHandlers:
             return
 
         m = await context.bot.get_chat_member(cid, user.id); is_adm = m.status in ['administrator', 'creator'] or user.id == OWNER_ID
-
         if txt == "账单" and is_adm:
-            return await msg.reply_text("🔒 验证中...", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📩 查看详细账单", url=f"t.me/{context.bot.username}?start=stats_{cid}_0")]]))
+            return await msg.reply_text("🔒 验证中...", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📩 查看账单", url=f"t.me/{context.bot.username}?start=stats_{cid}_0")]]))
         if txt == "总账" and is_adm:
-            return await msg.reply_text("🔒 验证中...", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📩 查看总账清单", url=f"t.me/{context.bot.username}?start=total_assets_{cid}")]]))
+            return await msg.reply_text("🔒 验证中...", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📩 查看总账", url=f"t.me/{context.bot.username}?start=total_assets_{cid}")]]))
 
         if (txt.startswith('+') or txt.startswith('-')) and is_adm:
             if msg.reply_to_message:
@@ -122,8 +122,7 @@ class BotHandlers:
                 with open("cover.jpg", "rb") as f: sent = await context.bot.send_photo(chat_id=cid, photo=f, caption=cap, reply_markup=InlineKeyboardMarkup(kb))
                 active_packets[pid]["mid"] = sent.message_id
             except: 
-                sent = await msg.reply_text(cap, reply_markup=InlineKeyboardMarkup(kb))
-                active_packets[pid]["mid"] = sent.message_id
+                sent = await msg.reply_text(cap, reply_markup=InlineKeyboardMarkup(kb)); active_packets[pid]["mid"] = sent.message_id
             active_packets[pid]["task"] = asyncio.create_task(self.timer_refund(pid, cid, context))
 
     async def timer_refund(self, pid, cid, context):
@@ -132,7 +131,7 @@ class BotHandlers:
             d = active_packets[pid]; grabbed = len(d["grabbers"]); unclaimed = sum(d["amounts"][grabbed:])
             if unclaimed > 0:
                 self.db.add_balance(d["owner_id"], cid, unclaimed, d["owner_name"]); self.db.log_action(d["owner_id"], "过期退还", unclaimed, cid)
-                await context.bot.send_message(cid, f"⏰ 【{d['owner_name']}】的红包到期，已退回余额。")
+                await context.bot.send_message(cid, f"⏰ 【{d['owner_name']}】的红包到期，未领金额已退还。")
             await self.finalize(pid, d["mid"], context)
 
     def gen_amts(self, total, count):
@@ -144,7 +143,7 @@ class BotHandlers:
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         q = update.callback_query; u = q.from_user; pid = q.data.replace("grab_", "")
         if pid.startswith("page_"):
-            p_p = pid.split("_"); q.message.text = f"/start stats_{p_p[1]}_{p_p[2]}"
+            q.message.text = f"/start stats_{pid.split('_')[1]}_{pid.split('_')[2]}"
             return await self.handle_start(update, context)
             
         if pid not in active_packets: return await q.answer("❌ 红包失效", show_alert=True)
@@ -153,37 +152,27 @@ class BotHandlers:
         if self.db.get_balance(u.id, d["cid"]) < d["total"]: return await q.answer(f"持分不足{d['total']}", show_alert=True)
         if any(g['id'] == u.id for g in d["grabbers"]): return await q.answer("已抢过", show_alert=True)
         
-        # 实时入场并立即刷新
-        d["grabbers"].append({"id": u.id, "name": u.first_name})
+        d["grabbers"].append({"id": u.id, "name": u.first_name}); grabbed_num = len(d["grabbers"])
         await q.answer("✅ 抢包成功！")
         
-        grabbed_num = len(d["grabbers"])
         header = f"🧧 【红包扫雷】\n━━━━━━━━━━━━━━\n发包：{d['owner_name']}\n金额：{d['total']} | 雷：{d['mine']} | 包：{d['count']}\n━━━━━━━━━━━━━━\n"
-        
         if grabbed_num >= d["count"]: 
             d["status"] = "settling"; d["task"].cancel(); await self.finalize(pid, q.message.message_id, context)
         else:
             name_list = []
             for i, g in enumerate(d["grabbers"]):
                 m_n = self.mask_name(g['name'])
-                if i == d["count"] - 2: name_list.append(f"{i+1}. {m_n} -> 🔐 防计算中...")
+                if i == d["count"] - 2: name_list.append(f"{i+1}. {m_n} 已抢，等待开奖")
                 else:
                     amt = d["amounts"][i]; is_m = (int(str(amt)[-1]) == d["mine"])
                     name_list.append(f"{i+1}. {m_n} -> {amt:.2f} {'💣' if is_m else '🧧'}")
-            
-            try:
-                await context.bot.edit_message_caption(
-                    chat_id=d["cid"], 
-                    message_id=q.message.message_id, 
-                    caption=header + "\n".join(name_list), 
-                    reply_markup=q.message.reply_markup
-                )
-            except Exception as e:
-                pass # 忽略并发导致的重复修改报错
+            try: await context.bot.edit_message_caption(chat_id=d["cid"], message_id=q.message.message_id, caption=header + "\n".join(name_list), reply_markup=q.message.reply_markup)
+            except: pass
 
     async def finalize(self, pid, mid, context):
         d = active_packets.pop(pid, None)
         if not d: return
+        d["status"] = "finished"
         res = [f"🧧 结算结果 (雷:{d['mine']})", f"发包：{d['owner_name']} | 金额：{d['total']}", "━━━━━━━━━━━━━━"]
         link = f"https://t.me{str(d['cid'])[4:]}/{mid}" if str(d['cid']).startswith("-100") else ""
         link_tag = f" [🔗]({link})" if link else ""
@@ -196,8 +185,11 @@ class BotHandlers:
                 inc = round(d["total"] * 0.95, 2); self.db.add_balance(d["owner_id"], d["cid"], inc, d["owner_name"]); 
                 self.db.log_action(d["owner_id"], f"中雷收入(来自{g['name']}){link_tag}", inc, d["cid"])
             res.append(f"{i+1}. {self.mask_name(g['name'])} -> {amt:.2f} {'💣' if is_mine else '🧧'}")
-        if len(d["grabbers"]) < d["count"]: res.append(f"━━━━━━━━━━━━━━\n⚠️ 剩余包数已退还。")
         
+        if len(d["grabbers"]) < d["count"]:
+            res.append(f"━━━━━━━━━━━━━━\n⚠️ 剩余包数已退还。")
+            
+        # 强制仅修改原图说明，绝不发送新消息
         try:
             await context.bot.edit_message_caption(
                 chat_id=d["cid"], 
@@ -205,6 +197,5 @@ class BotHandlers:
                 caption="\n".join(res), 
                 parse_mode="Markdown"
             )
-        except:
-            # 最后的兜底：如果 edit 失败（比如图片被删），直接发新消息
-            await context.bot.send_message(chat_id=d["cid"], text="\n".join(res))
+        except Exception:
+            pass # 如果因为图片被删导致无法修改，则不产生任何输出，杜绝弹出新文本消息

@@ -1,31 +1,74 @@
-import logging
+import os, logging, sqlite3, pytz
+from datetime import datetime
+from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters
-from bot.handlers import (
-    handle_message, handle_callback, start_command, 
-    init_db, scheduler, OWNER_ID
-)
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from bot.handlers import BotHandlers
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+class SQLiteDB:
+    def __init__(self, db_path="bot_data.db"):
+        self.db_path = db_path
+        self._init_db()
 
-async def post_init(application):
-    init_db()
-    scheduler.start()
-    logging.info("🚀 扫雷机器人已就绪，震动模式开启！")
+    def _init_db(self):
+        with sqlite3.connect(self.db_path) as conn:
+            # 用户表: 增加 name 字段用于总账显示，chat_id 用于数据隔离
+            conn.execute("CREATE TABLE IF NOT EXISTS users (uid TEXT, chat_id TEXT, balance REAL DEFAULT 0, name TEXT, PRIMARY KEY (uid, chat_id))")
+            # 流水表: 记录动作
+            conn.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT, action TEXT, amount REAL, chat_id TEXT, timestamp TEXT)")
+            # 设置表: 存储每群规则
+            conn.execute("CREATE TABLE IF NOT EXISTS settings (chat_id TEXT PRIMARY KEY, min_amt REAL, max_amt REAL, min_cnt INTEGER, max_cnt INTEGER)")
+            conn.commit()
 
-if __name__ == "__main__":
-    TOKEN = "YOUR_BOT_TOKEN_HERE"
-    
-    app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
+    def get_bj_time(self):
+        return datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S')
 
-    # 基础指令
-    app.add_handler(CommandHandler("start", start_command))
-    # 抢红包按钮点击
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    # 所有群内文本
-    app.add_handler(MessageHandler(
-        filters.CHAT & filters.TEXT & (~filters.COMMAND), 
-        handle_message
-    ))
+    def get_balance(self, uid, chat_id):
+        with sqlite3.connect(self.db_path) as conn:
+            res = conn.execute("SELECT balance FROM users WHERE uid=? AND chat_id=?", (str(uid), str(chat_id))).fetchone()
+            return res[0] if res else 0.0
 
+    def add_balance(self, uid, chat_id, amount, name="未知"):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("INSERT INTO users (uid, chat_id, balance, name) VALUES (?, ?, ?, ?) ON CONFLICT(uid, chat_id) DO UPDATE SET balance = balance + ?, name = ?", (str(uid), str(chat_id), amount, name, amount, name))
+            conn.commit()
+
+    def log_action(self, uid, action, amount, chat_id):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("INSERT INTO logs (uid, action, amount, chat_id, timestamp) VALUES (?,?,?,?,?)", (str(uid), action, amount, str(chat_id), self.get_bj_time()))
+            conn.commit()
+
+    def set_config(self, chat_id, min_a, max_a, min_c, max_c):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("INSERT INTO settings VALUES (?,?,?,?,?) ON CONFLICT(chat_id) DO UPDATE SET min_amt=?, max_amt=?, min_cnt=?, max_cnt=?", (str(chat_id), min_a, max_a, min_c, max_c, min_a, max_a, min_c, max_c))
+            conn.commit()
+
+    def get_config(self, chat_id):
+        with sqlite3.connect(self.db_path) as conn:
+            res = conn.execute("SELECT min_amt, max_amt, min_cnt, max_cnt FROM settings WHERE chat_id=?", (str(chat_id),)).fetchone()
+            return res if res else (20, 1000, 1, 10)
+
+    def get_user_logs(self, uid, chat_id, limit=100):
+        with sqlite3.connect(self.db_path) as conn:
+            return conn.execute("SELECT timestamp, action, amount FROM logs WHERE uid=? AND chat_id=? ORDER BY id DESC LIMIT ?", (str(uid), str(chat_id), limit)).fetchall()
+
+    def get_all_balances(self, chat_id):
+        with sqlite3.connect(self.db_path) as conn:
+            return conn.execute("SELECT name, balance FROM users WHERE chat_id=? ORDER BY balance DESC", (str(chat_id),)).fetchall()
+
+load_dotenv()
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+logging.basicConfig(level=logging.INFO)
+db = SQLiteDB()
+bot_handlers = BotHandlers(db)
+
+def main():
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", bot_handlers.handle_start))
+    # 核心监听器：必须允许所有更新类型
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), bot_handlers.handle_message))
+    app.add_handler(CallbackQueryHandler(bot_handlers.handle_callback))
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == '__main__':
+    main()

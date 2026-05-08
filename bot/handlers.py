@@ -30,23 +30,28 @@ class BotHandlers:
         txt = update.message.text; user = update.effective_user
         if "all_logs_" in txt:
             cid = txt.split("all_logs_")[-1]
-            conf = self.db.get_config(cid); logs = self.db.get_user_logs(user.id, cid, 100)
+            # 修正：只取群名
+            conf = self.db.get_config(cid)[-1]
+            logs = self.db.get_user_logs(user.id, cid, 100)
             rep = f"📊 【全部明细】群:{conf}\n━━━━━━━━━━━━━━\n"
-            rep += "\n".join([f"• {t[5:16]} {act} {amt:+.2f}" for t, act, amt in logs])
+            # 修正：去除链接显示
+            for t, act, amt in logs:
+                clean_act = re.sub(r'\[🔗\].*?\)', '', act).strip()
+                rep += f"• {t[5:16]} {clean_act} {amt:+.2f}\n"
             return await update.message.reply_text(rep if logs else "暂无记录")
         
         if "total_assets_" in txt:
-            cid = txt.split("total_assets_")[-1]; conf = self.db.get_config(cid); data = self.db.get_all_balances(cid)
+            cid = txt.split("total_assets_")[-1]
+            conf = self.db.get_config(cid)[-1]
+            data = self.db.get_all_balances(cid)
             rep = f"💰 【{conf}】总账单\n总持分：{sum(b for n,b in data):.2f}\n━━━━━━━━━━━━━━\n"
             rep += "\n".join([f"{i+1}. {self.mask_name(n)} -> {b:.2f}" for i, (n, b) in enumerate(data[:20])])
             return await update.message.reply_text(rep if data else "暂无数据")
         
         if "stats_" in txt:
             parts = txt.split("_")
-            cid = parts[1]
-            page = int(parts[2]) if len(parts) > 2 else 0
-            offset = page * 20
-            conf = self.db.get_config(cid)
+            cid = parts[1]; page = int(parts[2]) if len(parts) > 2 else 0; offset = page * 20
+            conf = self.db.get_config(cid)[-1]
             with sqlite3.connect(self.db.db_path) as conn:
                 ts = conn.execute("SELECT SUM(ABS(amount)) FROM logs WHERE action='发包' AND chat_id=?", (str(cid),)).fetchone()[0] or 0
                 all_mines = conn.execute("SELECT timestamp, action, amount FROM logs WHERE action LIKE '中雷收入%' AND chat_id=? ORDER BY id DESC", (str(cid),)).fetchall()
@@ -55,9 +60,8 @@ class BotHandlers:
             rep = (f"📊 【{conf}】详细账单\n━━━━━━━━━━━━━━\n发包总额：{ts:.2f}\n中雷总赔付：{pay_total / 0.95:.2f}\n系统净抽成：{real_profit:.2f}\n\n📜 中雷明细(每页20条)：\n")
             page_data = all_mines[offset:offset+20]
             for i, (t, act, amt) in enumerate(page_data):
-                from_name = act.replace("中雷收入(来自", "").split(")")[0]
-                hb_amt = amt / 0.95
-                fee = hb_amt * 0.05
+                from_name = re.sub(r'\[🔗\].*?\)', '', act).replace("中雷收入(来自", "").replace(")", "").strip()
+                hb_amt = amt / 0.95; fee = hb_amt * 0.05
                 rep += f"{offset+i+1}. {t[5:16]}+{from_name}+发{hb_amt:.0f}+抽{fee:.2f}\n"
             btns = []
             if page > 0: btns.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"page_{cid}_{page-1}"))
@@ -94,7 +98,10 @@ class BotHandlers:
 
         if txt == "我的流水":
             logs = self.db.get_user_logs(user.id, cid, 20)
-            rep = f"👤 【{user.first_name}】本群流水\n" + "\n".join([f"• {t[11:16]} {act} {amt:+.2f}" for t, act, amt in logs])
+            rep = f"👤 【{user.first_name}】本群流水\n"
+            for t, act, amt in logs:
+                clean_act = re.sub(r'\[🔗\].*?\)', '', act).strip()
+                rep += f"• {t[11:16]} {clean_act} {amt:+.2f}\n"
             kb = [[InlineKeyboardButton("📩 查看全部", url=f"t.me/{context.bot.username}?start=all_logs_{cid}")]]
             return await msg.reply_text(rep, reply_markup=InlineKeyboardMarkup(kb))
 
@@ -125,7 +132,6 @@ class BotHandlers:
             if self.db.get_balance(user.id, cid) < amt: return await msg.reply_text("❌ 余额不足")
             self.db.add_balance(user.id, cid, -amt, user.first_name); self.db.log_action(user.id, "发包", -amt, cid)
             pid = f"pk_{int(time.time()*1000)}"
-            # 修改：倒计时改为 300 秒 (5分钟)
             task = asyncio.create_task(self.timer_refund(pid, cid, context))
             active_packets[pid] = {"total": amt, "amounts": self.gen_amts(amt, count), "count": count, "mine": mine, "owner_id": user.id, "owner_name": user.first_name, "grabbers": [], "cid": cid, "task": task}
             cap = f"🧧 【红包扫雷】\n━━━━━━━━━━━━━━\n发包：{user.first_name}\n金额：{amt} | 雷：{mine} | 包：{count}\n━━━━━━━━━━━━━━\n等待抢包..."
@@ -136,7 +142,6 @@ class BotHandlers:
             except: sent = await msg.reply_text(cap, reply_markup=InlineKeyboardMarkup(kb)); active_packets[pid]["mid"] = sent.message_id
 
     async def timer_refund(self, pid, cid, context):
-        # 修改：等待时间改为 300 秒 (5分钟)
         await asyncio.sleep(300)
         if pid in active_packets:
             d = active_packets[pid]; grabbed = len(d["grabbers"]); unclaimed = sum(d["amounts"][grabbed:])
@@ -170,7 +175,7 @@ class BotHandlers:
             name_list = []
             for i, g in enumerate(d["grabbers"]):
                 m_n = self.mask_name(g['name'])
-                if i == d["count"] - 2: name_list.append(f"{i+1}. {m_n} -> 🔐 防计算中...")
+                if i == d["count"] - 2: name_list.append(f"{i+1}. {m_n} 已抢，等待开奖")
                 else:
                     amt = d["amounts"][i]; is_m = (int(str(amt)[-1]) == d["mine"])
                     name_list.append(f"{i+1}. {m_n} -> {amt:.2f} {'💣' if is_m else '🧧'}")
@@ -186,8 +191,7 @@ class BotHandlers:
             if is_mine:
                 self.db.add_balance(g['id'], d["cid"], -d["total"], g['name']); self.db.log_action(g['id'], "抢包中雷", -d["total"], d["cid"])
                 inc = round(d["total"] * 0.95, 2); self.db.add_balance(d["owner_id"], d["cid"], inc, d["owner_name"]); 
-                link = f"https://t.me{str(d['cid'])[4:]}/{mid}" if str(d['cid']).startswith("-100") else f"跳转"
-                self.db.log_action(d["owner_id"], f"中雷收入(来自{g['name']}) [🔗]({link})", inc, d["cid"])
+                self.db.log_action(d["owner_id"], f"中雷收入(来自{g['name']})", inc, d["cid"])
             res.append(f"{i+1}. {self.mask_name(g['name'])} -> {amt:.2f} {'💣' if is_mine else '🧧'}")
         if len(d["grabbers"]) < d["count"]: res.append(f"━━━━━━━━━━━━━━\n⚠️ 剩余包数已退还。")
         await context.bot.edit_message_caption(chat_id=d["cid"], message_id=mid, caption="\n".join(res))

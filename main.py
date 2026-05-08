@@ -12,11 +12,8 @@ class SQLiteDB:
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
-            # 存储用户信息，chat_id 实现隔离
             conn.execute("CREATE TABLE IF NOT EXISTS users (uid TEXT, chat_id TEXT, balance REAL DEFAULT 0, name TEXT, PRIMARY KEY (uid, chat_id))")
-            # 流水表
             conn.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT, action TEXT, amount REAL, chat_id TEXT, timestamp TEXT)")
-            # 群设置与群名存储
             conn.execute("CREATE TABLE IF NOT EXISTS settings (chat_id TEXT PRIMARY KEY, min_amt REAL, max_amt REAL, min_cnt INTEGER, max_cnt INTEGER, group_name TEXT)")
             conn.commit()
 
@@ -26,7 +23,7 @@ class SQLiteDB:
     def get_balance(self, uid, chat_id):
         with sqlite3.connect(self.db_path) as conn:
             res = conn.execute("SELECT balance FROM users WHERE uid=? AND chat_id=?", (str(uid), str(chat_id))).fetchone()
-            return res if res else 0.0
+            return res[0] if res else 0.0
 
     def add_balance(self, uid, chat_id, amount, name="玩家"):
         with sqlite3.connect(self.db_path) as conn:
@@ -46,7 +43,7 @@ class SQLiteDB:
     def get_config(self, chat_id):
         with sqlite3.connect(self.db_path) as conn:
             res = conn.execute("SELECT min_amt, max_amt, min_cnt, max_cnt, group_name FROM settings WHERE chat_id=?", (str(chat_id),)).fetchone()
-            return res if res else (20.0, 1000.0, 1, 10, "未知群组")
+            return res if res else (20.0, 1000.0, 1, 10, "未命名群组")
 
     def get_user_logs(self, uid, chat_id, limit=100):
         with sqlite3.connect(self.db_path) as conn:
@@ -63,7 +60,6 @@ db = SQLiteDB()
 bot_handlers = BotHandlers(db)
 
 def main():
-    if not TOKEN: return
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", bot_handlers.handle_start))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), bot_handlers.handle_message))

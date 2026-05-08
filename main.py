@@ -23,7 +23,7 @@ class SQLiteDB:
     def get_balance(self, uid, chat_id):
         with sqlite3.connect(self.db_path) as conn:
             res = conn.execute("SELECT balance FROM users WHERE uid=? AND chat_id=?", (str(uid), str(chat_id))).fetchone()
-            return res[0] if res else 0.0
+            return res if res else 0.0
 
     def add_balance(self, uid, chat_id, amount, name="玩家"):
         with sqlite3.connect(self.db_path) as conn:
@@ -55,6 +55,7 @@ class SQLiteDB:
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+logging.basicConfig(level=logging.INFO)
 db = SQLiteDB()
 bot_handlers = BotHandlers(db)
 

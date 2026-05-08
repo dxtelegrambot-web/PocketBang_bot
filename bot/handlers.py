@@ -14,15 +14,18 @@ class BotHandlers:
     def mask_name(self, name):
         if not name: return "*"
         n = str(name)
-        return f"{n[0]}*{n[-1]}" if len(n) > 2 else n
+        return f"{n}*{n[-1]}" if len(n) > 2 else n
 
     async def verify_owner(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """核心修改：权限检查仅作为熔断开关，不触动数据库数据"""
         cid = update.effective_chat.id
         if not group_switch.get(cid): return False, "⚠️ 机器人未开启。"
         try:
             o = await context.bot.get_chat_member(cid, OWNER_ID)
-            if o.status not in ['administrator', 'creator']: return False, "❌ 权限熔断：拥有者非管理。"
-        except: return False, "❌ 权限熔断。"
+            # 仅判断身份，若非管理则返回False触发宕机提示
+            if o.status not in ['administrator', 'creator']: 
+                return False, "❌ 权限熔断：拥有者失去管理权，机器人已宕机。请恢复权限后发送“开启”。"
+        except: return False, "❌ 权限熔断：拥有者不在群内，机器人已停机。"
         return True, ""
 
     async def handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -43,7 +46,7 @@ class BotHandlers:
             with sqlite3.connect(self.db.db_path) as conn:
                 ts = conn.execute("SELECT SUM(ABS(amount)) FROM logs WHERE action='发包' AND chat_id=?", (str(cid),)).fetchone()[0] or 0
                 pay_t = conn.execute("SELECT SUM(amount) FROM logs WHERE action LIKE '中雷收入%' AND chat_id=?", (str(cid),)).fetchone()[0] or 0
-            rep = f"📊 【{conf[4]}】财务报表\n━━━━━━━━━━━━━━\n发包总额：{ts:.2f}\n系统净利润：{(pay_t/0.95)*0.05:.2f}"
+            rep = f"📊 【{conf[4]}】财务报表\n━━━━━━━━━━━━━━\n总发包金额：{ts:.2f}\n系统净利润：{(pay_t/0.95)*0.05:.2f}"
             return await update.message.reply_text(rep)
         await update.message.reply_text("🤖 扫雷系统已就绪。")
 
@@ -55,8 +58,11 @@ class BotHandlers:
 
         if txt == "开启" and user.id == OWNER_ID:
             group_switch[cid] = True
-            self.db.set_config(cid, 20, 1000, 1, 10, gname)
-            return await msg.reply_text("✅ 机器人已启动！")
+            # 开启时仅更新配置，不重置用户数据
+            old_conf = self.db.get_config(cid)
+            self.db.set_config(cid, old_conf[0], old_conf[1], old_conf[2], old_conf[3], gname)
+            return await msg.reply_text("✅ 机器人已启动！数据已成功加载。")
+        
         if txt == "关闭" and user.id == OWNER_ID:
             group_switch[cid] = False
             return await msg.reply_text("💤 机器人已休眠。")
@@ -155,12 +161,9 @@ class BotHandlers:
         res = [f"🧧 结算结果 (雷:{d['mine']})", f"发包：{d['owner_name']} | 金额：{d['total']}", "━━━━━━━━━━━━━━"]
         for i, g in enumerate(d["grabbers"]):
             amt = d["amounts"][i]; is_mine = (int(str(amt)[-1]) == d["mine"])
-            # 先加抢到的钱
             self.db.add_balance(g['id'], d["cid"], amt, g['name']); self.db.log_action(g['id'], "抢包", amt, d["cid"])
             if is_mine:
-                # 中雷扣费
                 self.db.add_balance(g['id'], d["cid"], -d["total"], g['name']); self.db.log_action(g['id'], "抢包中雷", -d["total"], d["cid"])
-                # 发包者收入
                 inc = round(d["total"] * 0.95, 2); self.db.add_balance(d["owner_id"], d["cid"], inc, d["owner_name"]); self.db.log_action(d["owner_id"], f"中雷收入({g['name']})", inc, d["cid"])
             res.append(f"{i+1}. {self.mask_name(g['name'])} -> {amt:.2f} {'💣' if is_mine else '🧧'}")
         if len(d["grabbers"]) < d["count"]: res.append(f"━━━━━━━━━━━━━━\n⚠️ 剩余包数已退还。")

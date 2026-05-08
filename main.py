@@ -12,7 +12,7 @@ class SQLiteDB:
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
-            # 增加了 name 字段
+            # 用户表增加了 name 字段，用于总账显示名字
             conn.execute("CREATE TABLE IF NOT EXISTS users (uid TEXT, chat_id TEXT, balance REAL DEFAULT 0, name TEXT, PRIMARY KEY (uid, chat_id))")
             conn.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT, action TEXT, amount REAL, is_mine INTEGER, chat_id TEXT, timestamp TEXT)")
             conn.execute("CREATE TABLE IF NOT EXISTS settings (chat_id TEXT PRIMARY KEY, min_amt REAL, max_amt REAL, min_cnt INTEGER, max_cnt INTEGER)")
@@ -24,6 +24,7 @@ class SQLiteDB:
             return res[0] if res else 0.0
 
     def add_balance(self, uid, chat_id, amount, name="未知"):
+        # 每次加减分都会同步更新用户的最新飞机名字
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("INSERT INTO users (uid, chat_id, balance, name) VALUES (?, ?, ?, ?) ON CONFLICT(uid, chat_id) DO UPDATE SET balance = balance + ?, name = ?", (str(uid), str(chat_id), amount, name, amount, name))
             conn.commit()
@@ -51,15 +52,17 @@ class SQLiteDB:
     def get_group_stats(self, chat_id):
         with sqlite3.connect(self.db_path) as conn:
             ts = conn.execute("SELECT SUM(ABS(amount)) FROM logs WHERE action='发包' AND chat_id=?", (str(chat_id),)).fetchone()[0] or 0
-            tm = conn.execute("SELECT COUNT(*) FROM logs WHERE action='中雷' AND chat_id=?", (str(chat_id),)).fetchone()[0] or 0
+            tm = conn.execute("SELECT COUNT(*) FROM logs WHERE action='抢包中雷' AND chat_id=?", (str(chat_id),)).fetchone()[0] or 0
             return ts, tm
 
     def get_all_balances(self, chat_id):
+        # 按照名字和金额返回
         with sqlite3.connect(self.db_path) as conn:
             return conn.execute("SELECT name, balance FROM users WHERE chat_id=? ORDER BY balance DESC", (str(chat_id),)).fetchall()
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+logging.basicConfig(level=logging.INFO)
 db = SQLiteDB()
 bot_handlers = BotHandlers(db)
 
@@ -70,4 +73,5 @@ def main():
     app.add_handler(CallbackQueryHandler(bot_handlers.handle_callback))
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
-if __name__ == '__main__': main()
+if __name__ == '__main__':
+    main()

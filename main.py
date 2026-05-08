@@ -12,9 +12,11 @@ class SQLiteDB:
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
+            # 存储用户信息和群名字
             conn.execute("CREATE TABLE IF NOT EXISTS users (uid TEXT, chat_id TEXT, balance REAL DEFAULT 0, name TEXT, PRIMARY KEY (uid, chat_id))")
+            # 存储流水记录
             conn.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT, action TEXT, amount REAL, chat_id TEXT, timestamp TEXT)")
-            # 增加 settings 表存储群名
+            # 存储群规则和群名字
             conn.execute("CREATE TABLE IF NOT EXISTS settings (chat_id TEXT PRIMARY KEY, min_amt REAL, max_amt REAL, min_cnt INTEGER, max_cnt INTEGER, group_name TEXT)")
             conn.commit()
 
@@ -26,7 +28,7 @@ class SQLiteDB:
             res = conn.execute("SELECT balance FROM users WHERE uid=? AND chat_id=?", (str(uid), str(chat_id))).fetchone()
             return res[0] if res else 0.0
 
-    def add_balance(self, uid, chat_id, amount, name="未知"):
+    def add_balance(self, uid, chat_id, amount, name="玩家"):
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("INSERT INTO users (uid, chat_id, balance, name) VALUES (?, ?, ?, ?) ON CONFLICT(uid, chat_id) DO UPDATE SET balance = balance + ?, name = ?", (str(uid), str(chat_id), amount, name, amount, name))
             conn.commit()
@@ -36,15 +38,15 @@ class SQLiteDB:
             conn.execute("INSERT INTO logs (uid, action, amount, chat_id, timestamp) VALUES (?,?,?,?,?)", (str(uid), action, amount, str(chat_id), self.get_bj_time()))
             conn.commit()
 
-    def set_config(self, chat_id, min_a, max_a, min_c, max_c, g_name):
+    def set_config(self, chat_id, mina, maxa, minc, maxc, gname):
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("INSERT INTO settings VALUES (?,?,?,?,?,?) ON CONFLICT(chat_id) DO UPDATE SET min_amt=?, max_amt=?, min_cnt=?, max_cnt=?, group_name=?", (str(chat_id), min_a, max_a, min_c, max_c, g_name, min_a, max_a, min_c, max_c, g_name))
+            conn.execute("INSERT INTO settings VALUES (?,?,?,?,?,?) ON CONFLICT(chat_id) DO UPDATE SET min_amt=?, max_amt=?, min_cnt=?, max_cnt=?, group_name=?", (str(chat_id), mina, maxa, minc, maxc, gname, mina, maxa, minc, maxc, gname))
             conn.commit()
 
     def get_config(self, chat_id):
         with sqlite3.connect(self.db_path) as conn:
             res = conn.execute("SELECT min_amt, max_amt, min_cnt, max_cnt, group_name FROM settings WHERE chat_id=?", (str(chat_id),)).fetchone()
-            return res if res else (20, 1000, 1, 10, "未知群组")
+            return res if res else (20, 1000, 1, 10, "未命名群组")
 
     def get_user_logs(self, uid, chat_id, limit=100):
         with sqlite3.connect(self.db_path) as conn:
@@ -62,6 +64,7 @@ bot_handlers = BotHandlers(db)
 
 def main():
     app = Application.builder().token(TOKEN).build()
+    # /start 指令必须注册用于私聊唤醒报表
     app.add_handler(CommandHandler("start", bot_handlers.handle_start))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), bot_handlers.handle_message))
     app.add_handler(CallbackQueryHandler(bot_handlers.handle_callback))

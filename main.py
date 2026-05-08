@@ -12,12 +12,10 @@ class SQLiteDB:
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
-            # 用户表: 增加 name 字段用于总账显示，chat_id 用于数据隔离
             conn.execute("CREATE TABLE IF NOT EXISTS users (uid TEXT, chat_id TEXT, balance REAL DEFAULT 0, name TEXT, PRIMARY KEY (uid, chat_id))")
-            # 流水表: 记录动作
             conn.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT, action TEXT, amount REAL, chat_id TEXT, timestamp TEXT)")
-            # 设置表: 存储每群规则
-            conn.execute("CREATE TABLE IF NOT EXISTS settings (chat_id TEXT PRIMARY KEY, min_amt REAL, max_amt REAL, min_cnt INTEGER, max_cnt INTEGER)")
+            # 增加 settings 表存储群名
+            conn.execute("CREATE TABLE IF NOT EXISTS settings (chat_id TEXT PRIMARY KEY, min_amt REAL, max_amt REAL, min_cnt INTEGER, max_cnt INTEGER, group_name TEXT)")
             conn.commit()
 
     def get_bj_time(self):
@@ -38,15 +36,15 @@ class SQLiteDB:
             conn.execute("INSERT INTO logs (uid, action, amount, chat_id, timestamp) VALUES (?,?,?,?,?)", (str(uid), action, amount, str(chat_id), self.get_bj_time()))
             conn.commit()
 
-    def set_config(self, chat_id, min_a, max_a, min_c, max_c):
+    def set_config(self, chat_id, min_a, max_a, min_c, max_c, g_name):
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("INSERT INTO settings VALUES (?,?,?,?,?) ON CONFLICT(chat_id) DO UPDATE SET min_amt=?, max_amt=?, min_cnt=?, max_cnt=?", (str(chat_id), min_a, max_a, min_c, max_c, min_a, max_a, min_c, max_c))
+            conn.execute("INSERT INTO settings VALUES (?,?,?,?,?,?) ON CONFLICT(chat_id) DO UPDATE SET min_amt=?, max_amt=?, min_cnt=?, max_cnt=?, group_name=?", (str(chat_id), min_a, max_a, min_c, max_c, g_name, min_a, max_a, min_c, max_c, g_name))
             conn.commit()
 
     def get_config(self, chat_id):
         with sqlite3.connect(self.db_path) as conn:
-            res = conn.execute("SELECT min_amt, max_amt, min_cnt, max_cnt FROM settings WHERE chat_id=?", (str(chat_id),)).fetchone()
-            return res if res else (20, 1000, 1, 10)
+            res = conn.execute("SELECT min_amt, max_amt, min_cnt, max_cnt, group_name FROM settings WHERE chat_id=?", (str(chat_id),)).fetchone()
+            return res if res else (20, 1000, 1, 10, "未知群组")
 
     def get_user_logs(self, uid, chat_id, limit=100):
         with sqlite3.connect(self.db_path) as conn:
@@ -65,7 +63,6 @@ bot_handlers = BotHandlers(db)
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", bot_handlers.handle_start))
-    # 核心监听器：必须允许所有更新类型
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), bot_handlers.handle_message))
     app.add_handler(CallbackQueryHandler(bot_handlers.handle_callback))
     app.run_polling(allowed_updates=Update.ALL_TYPES)

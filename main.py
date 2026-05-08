@@ -12,11 +12,9 @@ class SQLiteDB:
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
-            # 用户表 (UID + 群ID 隔离余额)
-            conn.execute("CREATE TABLE IF NOT EXISTS users (uid TEXT, chat_id TEXT, balance REAL DEFAULT 0, PRIMARY KEY (uid, chat_id))")
-            # 流水表 (记录详细变动)
+            # 用户表增加 name 字段
+            conn.execute("CREATE TABLE IF NOT EXISTS users (uid TEXT, chat_id TEXT, name TEXT, balance REAL DEFAULT 0, PRIMARY KEY (uid, chat_id))")
             conn.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT, action TEXT, amount REAL, is_mine INTEGER, chat_id TEXT, timestamp TEXT)")
-            # 群设置表 (自定义金额/包数范围)
             conn.execute("CREATE TABLE IF NOT EXISTS settings (chat_id TEXT PRIMARY KEY, min_amt REAL, max_amt REAL, min_cnt INTEGER, max_cnt INTEGER)")
             conn.commit()
 
@@ -25,9 +23,10 @@ class SQLiteDB:
             res = conn.execute("SELECT balance FROM users WHERE uid=? AND chat_id=?", (str(uid), str(chat_id))).fetchone()
             return res[0] if res else 0.0
 
-    def add_balance(self, uid, chat_id, amount):
+    def add_balance(self, uid, chat_id, name, amount):
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("INSERT INTO users (uid, chat_id, balance) VALUES (?, ?, ?) ON CONFLICT(uid, chat_id) DO UPDATE SET balance = balance + ?", (str(uid), str(chat_id), amount, amount))
+            # 每次加减分都更新最新的昵称
+            conn.execute("INSERT INTO users (uid, chat_id, name, balance) VALUES (?, ?, ?, ?) ON CONFLICT(uid, chat_id) DO UPDATE SET balance = balance + ?, name = ?", (str(uid), str(chat_id), name, amount, amount, name))
             conn.commit()
 
     def log_action(self, uid, action, amount, is_mine, chat_id):
@@ -53,12 +52,13 @@ class SQLiteDB:
     def get_group_stats(self, chat_id):
         with sqlite3.connect(self.db_path) as conn:
             ts = conn.execute("SELECT SUM(ABS(amount)) FROM logs WHERE action='发包' AND chat_id=?", (str(chat_id),)).fetchone()[0] or 0
-            tm = conn.execute("SELECT COUNT(*) FROM logs WHERE action='中雷' AND chat_id=?", (str(chat_id),)).fetchone()[0] or 0
+            tm = conn.execute("SELECT COUNT(*) FROM logs WHERE action='抢包中雷' AND chat_id=?", (str(chat_id),)).fetchone()[0] or 0
             return ts, tm
 
     def get_all_balances(self, chat_id):
         with sqlite3.connect(self.db_path) as conn:
-            return conn.execute("SELECT uid, balance FROM users WHERE chat_id=? ORDER BY balance DESC", (str(chat_id),)).fetchall()
+            # 查询时返回名字和余额
+            return conn.execute("SELECT name, balance FROM users WHERE chat_id=? ORDER BY balance DESC", (str(chat_id),)).fetchall()
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")

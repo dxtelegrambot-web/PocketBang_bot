@@ -43,7 +43,7 @@ class SQLiteDB:
     def get_config(self, chat_id):
         with sqlite3.connect(self.db_path) as conn:
             res = conn.execute("SELECT min_amt, max_amt, min_cnt, max_cnt, group_name FROM settings WHERE chat_id=?", (str(chat_id),)).fetchone()
-            return res if res else (20.0, 1000.0, 1, 10, "未知群组")
+            return res if res else (20.0, 1000.0, 1, 10, "未命名群组")
 
     def get_user_logs(self, uid, chat_id, limit=100):
         with sqlite3.connect(self.db_path) as conn:
@@ -55,7 +55,6 @@ class SQLiteDB:
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-logging.basicConfig(level=logging.INFO)
 db = SQLiteDB()
 bot_handlers = BotHandlers(db)
 
